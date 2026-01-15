@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for skill_editor.py and view_save.py core functions.
+Unit tests for USE (Underrail Save Editor) core functions.
 """
 
 import unittest
@@ -11,32 +11,28 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from skill_editor import (
+from use.core import (
     is_packed,
     unpack_data,
     pack_data,
-    get_skill_names_from_data,
+    get_skill_entries,
     get_skill_names,
-    get_base_stats_from_data,
+    get_stat_entries,
     write_skill_value,
     write_stat_value,
-    read_skill_values,
+    find_xp_current,
+    find_currency,
+    find_game_version,
+    find_character_name,
+    detect_dlc,
+    detect_xp_system,
+    calculate_xp_needed,
     PACKED_HEADER,
     SKILL_NAMES_BASE,
     SKILL_NAMES_DLC,
     STAT_NAMES,
     ESI_PATTERN,
-)
-
-from view_save import (
-    calculate_xp_needed,
-    find_xp_current,
-    find_currency,
-    find_game_version,
-    find_character_name,
-    find_base_stats,
-    detect_dlc,
-    detect_xp_system,
+    SKILL_PATTERN,
     XP_PATTERN,
     VERSION_MARKER,
     CURRENCY_PATHS,
@@ -143,28 +139,6 @@ class TestSkillValueOperations(unittest.TestCase):
         mod = struct.unpack('<i', data[8:12])[0]
         self.assertEqual(base, 55)
         self.assertEqual(mod, 83)
-    
-    def test_read_skill_values(self):
-        """read_skill_values should extract values from offsets."""
-        # Create test data with known skill values
-        data = bytearray(50)
-        struct.pack_into('<i', data, 10, 25)  # base at offset 10
-        struct.pack_into('<i', data, 14, 40)  # mod at offset 14
-        struct.pack_into('<i', data, 30, 50)  # base at offset 30
-        struct.pack_into('<i', data, 34, 75)  # mod at offset 34
-        
-        offsets = [
-            {'offset': 10, 'base': 25, 'mod': 40},
-            {'offset': 30, 'base': 50, 'mod': 75},
-        ]
-        
-        skills = read_skill_values(bytes(data), offsets)
-        
-        self.assertEqual(len(skills), 2)
-        self.assertEqual(skills[0]['base'], 25)
-        self.assertEqual(skills[0]['mod'], 40)
-        self.assertEqual(skills[1]['base'], 50)
-        self.assertEqual(skills[1]['mod'], 75)
 
 
 class TestBaseStatOperations(unittest.TestCase):
@@ -197,8 +171,8 @@ class TestBaseStatOperations(unittest.TestCase):
         self.assertEqual(base, 8)
         self.assertEqual(effective, 10)
     
-    def test_get_base_stats_synthetic(self):
-        """get_base_stats_from_data should find synthetic stat patterns."""
+    def test_get_stat_entries_synthetic(self):
+        """get_stat_entries should find synthetic stat patterns."""
         # Build a synthetic stat entry using ESI pattern
         type_id = struct.pack('<I', 1115)  # Variable type ID
         base_val = struct.pack('<i', 8)
@@ -206,14 +180,14 @@ class TestBaseStatOperations(unittest.TestCase):
         
         data = bytes(100) + ESI_PATTERN + type_id + base_val + eff_val + bytes(100)
         
-        stats = get_base_stats_from_data(data)
+        stats = get_stat_entries(data)
         
         self.assertEqual(len(stats), 1)
         self.assertEqual(stats[0]['base'], 8)
         self.assertEqual(stats[0]['effective'], 9)
     
-    def test_get_base_stats_filters_invalid(self):
-        """get_base_stats_from_data should filter out unreasonable values."""
+    def test_get_stat_entries_filters_invalid(self):
+        """get_stat_entries should filter out unreasonable values."""
         type_id = struct.pack('<I', 1115)
         
         # Create entry with invalid value (too high for a stat)
@@ -222,7 +196,7 @@ class TestBaseStatOperations(unittest.TestCase):
         
         data = bytes(50) + ESI_PATTERN + type_id + invalid_base + invalid_eff + bytes(50)
         
-        stats = get_base_stats_from_data(data)
+        stats = get_stat_entries(data)
         
         # Should find 0 stats due to filtering
         self.assertEqual(len(stats), 0)
@@ -232,51 +206,47 @@ class TestSkillPatternParsing(unittest.TestCase):
     """Tests for skill pattern detection."""
     
     def test_pattern_detection_synthetic(self):
-        """get_skill_names_from_data should find synthetic skill patterns."""
-        # Build a synthetic skill entry:
-        # eSKC + \x02\x00\x00\x00 + \x02\x00\x00\x00 + \x09 + type_id(4) + base(4) + mod(4)
-        pattern = b'eSKC\x02\x00\x00\x00\x02\x00\x00\x00\x09'
+        """get_skill_entries should find synthetic skill patterns."""
+        # Build a synthetic skill entry
         type_id = struct.pack('<I', 1116)  # Variable type ID
         base_val = struct.pack('<i', 55)
         mod_val = struct.pack('<i', 83)
         
-        data = bytes(100) + pattern + type_id + base_val + mod_val + bytes(100)
+        data = bytes(100) + SKILL_PATTERN + type_id + base_val + mod_val + bytes(100)
         
-        skills = get_skill_names_from_data(data)
+        skills = get_skill_entries(data)
         
         self.assertEqual(len(skills), 1)
         self.assertEqual(skills[0]['base'], 55)
         self.assertEqual(skills[0]['mod'], 83)
     
     def test_pattern_filters_invalid_values(self):
-        """get_skill_names_from_data should filter out unreasonable values."""
-        pattern = b'eSKC\x02\x00\x00\x00\x02\x00\x00\x00\x09'
+        """get_skill_entries should filter out unreasonable values."""
         type_id = struct.pack('<I', 1116)
         
         # Create entries with invalid values (too high)
         invalid_base = struct.pack('<i', 500)  # > 300 max
         invalid_mod = struct.pack('<i', 100)
         
-        data = bytes(50) + pattern + type_id + invalid_base + invalid_mod + bytes(50)
+        data = bytes(50) + SKILL_PATTERN + type_id + invalid_base + invalid_mod + bytes(50)
         
-        skills = get_skill_names_from_data(data)
+        skills = get_skill_entries(data)
         
         # Should find 0 skills due to filtering
         self.assertEqual(len(skills), 0)
     
     def test_multiple_skills_detected(self):
-        """get_skill_names_from_data should find multiple skill entries."""
-        pattern = b'eSKC\x02\x00\x00\x00\x02\x00\x00\x00\x09'
+        """get_skill_entries should find multiple skill entries."""
         type_id = struct.pack('<I', 1116)
         
         # Create 3 valid skill entries
-        skill1 = pattern + type_id + struct.pack('<ii', 10, 15)
-        skill2 = pattern + type_id + struct.pack('<ii', 20, 30)
-        skill3 = pattern + type_id + struct.pack('<ii', 30, 45)
+        skill1 = SKILL_PATTERN + type_id + struct.pack('<ii', 10, 15)
+        skill2 = SKILL_PATTERN + type_id + struct.pack('<ii', 20, 30)
+        skill3 = SKILL_PATTERN + type_id + struct.pack('<ii', 30, 45)
         
         data = bytes(50) + skill1 + bytes(20) + skill2 + bytes(20) + skill3 + bytes(50)
         
-        skills = get_skill_names_from_data(data)
+        skills = get_skill_entries(data)
         
         self.assertEqual(len(skills), 3)
         self.assertEqual(skills[0]['base'], 10)
@@ -582,41 +552,6 @@ class TestXPSystemDetection(unittest.TestCase):
         
         self.assertEqual(system, 'classic')
         self.assertFalse(certain)
-
-
-class TestViewSaveBaseStats(unittest.TestCase):
-    """Tests for view_save's find_base_stats function."""
-    
-    def test_find_base_stats_synthetic(self):
-        """find_base_stats should find synthetic stat patterns."""
-        # Build a synthetic stat entry using ESI pattern
-        from view_save import ESI_PATTERN as VIEW_ESI
-        
-        type_id = struct.pack('<I', 1115)
-        base_val = struct.pack('<i', 8)
-        eff_val = struct.pack('<i', 9)
-        
-        data = bytes(100) + VIEW_ESI + type_id + base_val + eff_val + bytes(100)
-        
-        stats = find_base_stats(data)
-        
-        self.assertEqual(len(stats), 1)
-        self.assertEqual(stats[0]['base'], 8)
-        self.assertEqual(stats[0]['effective'], 9)
-    
-    def test_find_base_stats_filters_invalid(self):
-        """find_base_stats should filter out unreasonable values."""
-        from view_save import ESI_PATTERN as VIEW_ESI
-        
-        type_id = struct.pack('<I', 1115)
-        invalid_base = struct.pack('<i', 50)  # > 30 max
-        invalid_eff = struct.pack('<i', 60)   # > 50 max
-        
-        data = bytes(50) + VIEW_ESI + type_id + invalid_base + invalid_eff + bytes(50)
-        
-        stats = find_base_stats(data)
-        
-        self.assertEqual(len(stats), 0)
 
 
 class TestFeatDisplayNames(unittest.TestCase):

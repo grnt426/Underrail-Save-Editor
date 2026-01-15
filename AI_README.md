@@ -176,6 +176,65 @@ Example:
 
 The `XX XX` bytes after `\x0a\x0a\x06` appear to be an incrementing ID.
 
+## Experience Points (XP)
+
+### XP Storage Pattern
+Current XP is stored using the `eGD` marker with a `value__` field:
+```
+eGD\x01\x00\x00\x00\x07value__\x00\x08\x02\x00\x00\x00 + XP_VALUE(4 bytes)
+```
+
+- XP value is int32 little-endian
+- This represents current XP towards next level, NOT total lifetime XP
+- XP needed for next level is calculated by game based on character level
+
+### Detection Code
+```python
+XP_PATTERN = b'eGD\x01\x00\x00\x00\x07value__\x00\x08\x02\x00\x00\x00'
+idx = data.find(XP_PATTERN)
+if idx != -1:
+    xp = struct.unpack('<i', data[idx + len(XP_PATTERN):idx + len(XP_PATTERN) + 4])[0]
+```
+
+## Currency
+
+### Currency Types
+The game has two main currencies:
+- **Stygian Coins** - Primary currency, used for most transactions
+- **SGS Credits** - Secondary currency, used at SGS (starting area) vendors
+
+### Currency Internal Paths
+```
+currency\stygiancoin    # Stygian Coins
+currency\sgscredits     # SGS Credits
+```
+
+### Currency Storage Pattern
+Currency items use a two-part storage:
+1. **Definition area** (near end of file): Contains the item path and a 2-byte item ID
+2. **Inventory area** (earlier in file): Contains the actual count
+
+Pattern for finding count:
+1. Find currency path (e.g., `currency\stygiancoin`)
+2. Extract item ID from bytes after path: `\x05 + ID_lo ID_hi + \x00\x00`
+3. Search for reference pattern: `count(4 bytes) + \x09 + (ID-1)(2 bytes) + \x00\x00`
+4. The count is the 4 bytes before the `\x09` reference
+
+### Detection Code
+```python
+CURRENCY_PATHS = {
+    'stygian_coins': b'currency\\stygiancoin',
+    'sgs_credits': b'currency\\sgscredits',
+}
+
+# Find path, extract ID, then search for count
+idx = data.find(path)
+item_id = struct.unpack('<H', data[idx + len(path) + 1:idx + len(path) + 3])[0]
+ref_pattern = b'\x09' + struct.pack('<H', item_id - 1) + b'\x00\x00'
+ref_idx = data.find(ref_pattern)
+count = struct.unpack('<i', data[ref_idx - 4:ref_idx])[0]  # Count is 4-8 bytes before ref
+```
+
 ## Derived Stats
 
 Derived stats (Health, AP, MP, Fortitude, Resolve, etc.) are calculated from base attributes and feats. Their storage location is less predictable than skills/attributes. Key derived stats:
@@ -202,49 +261,81 @@ Derived stats (Health, AP, MP, Fortitude, Resolve, etc.) are calculated from bas
 
 ## Code Reference
 
-### skill_editor.py
-Main editor script with core functions:
+### Project Structure
+
+```
+Underrail Character Editor/
+├── run.bat              # Windows launcher
+├── run.sh               # Unix launcher  
+├── use/                 # Python package (Underrail Save Editor)
+│   ├── __init__.py      # Package init
+│   ├── core.py          # Shared save file processing functions
+│   ├── viewer.py        # Character data viewer
+│   ├── editor.py        # Save file editor
+│   └── main_screen.py   # Console menu interface
+├── tests/               # Unit and e2e tests
+├── README.md            # User documentation
+└── AI_README.md         # This file (technical reference)
+```
+
+### use/core.py
+Core module with all shared save file processing functions:
 - `is_packed(data)` - detect packed files
 - `unpack_data(packed_data)` - decompress
 - `pack_data(unpacked_data)` - compress with header
-- `get_skill_names_from_data(data)` - find all skill entries
+- `load_save(path)` - load and unpack a save file
+- `find_save_file(save_dir)` - find save file in directory
+- `get_skill_entries(data)` - find all skill entries
 - `get_skill_names(num_skills)` - return correct skill list based on DLC detection
+- `get_stat_entries(data)` - find all base attribute entries
 - `write_skill_value(data, offset, base, mod)` - modify skill values
+- `write_stat_value(data, offset, base, effective)` - modify attribute values
+- `find_character_name(data)` - extract character name
+- `find_game_version(data)` - extract game version
+- `find_character_level(save_path, total_skill_points)` - detect character level
+- `find_xp_current(data)` - find current XP
+- `detect_xp_system(data)` - detect Oddity vs Classic XP
+- `find_currency(data)` - find currency counts
+- `find_feats(data, skills)` - find character feats
+- `detect_dlc(data, skill_count)` - detect installed DLC
 
-### explore_save.py
-Diagnostic tool for analyzing save file structure. Useful for reverse-engineering new data patterns or debugging.
+### use/viewer.py
+Read-only viewer module. Displays character name, game version, DLC detection,
+XP, currency, base attributes, skills (grouped by category), and feats.
+
+### use/editor.py
+Interactive editor module. Allows editing base attributes and skill point allocations.
+Creates backups before saving.
+
+### use/main_screen.py
+Console menu interface. Provides commands: view, edit, help, quit.
+
+### Running the Application
 
 ```bash
-# Full analysis of default test save
-python explore_save.py
+# Windows
+run.bat
 
-# Analyze a specific save file
-python explore_save.py path/to/global.dat
+# Unix/Linux/macOS
+./run.sh
 
-# Show only base attributes
-python explore_save.py --stats
-
-# Show only skills
-python explore_save.py --skills
-
-# Show only feats
-python explore_save.py --feats
-
-# Hexdump a region (offset, length)
-python explore_save.py --hexdump 205900 300
-
-# Search for a string pattern
-python explore_save.py --search "opportunist"
-
-# Find all lowercase strings in a region
-python explore_save.py --strings 205000 207000
+# Or directly with Python
+python -m use.main_screen
 ```
 
 ## Verification Values (from test saves)
 
-### Character "See Me Now", Level 10 (with Expedition DLC)
+### Character "See Me Now" (with Expedition DLC)
 
-**Base Attributes:**
+**Progression across saves:**
+
+| Level | XP | Stygian Coins | SGS Credits | Skill Points |
+|-------|-----|---------------|-------------|--------------|
+| 9 | 1 | 654 | 855 | 440 |
+| 10 | 1 | 1,636 | 32 | 480 |
+| 11 | 1 | 2,682 | 862 | 1,540 (edited) |
+
+**Base Attributes (Level 10):**
 
 | Attribute | Base | Effective |
 |-----------|------|-----------|
@@ -265,23 +356,11 @@ python explore_save.py --strings 205000 207000
 - Parry
 - Deflection
 
-**Sample Skills (Level 9 snapshot):**
-
-| Skill | Base | Effective |
-|-------|------|-----------|
-| Melee | 55 | 83 |
-| Dodge | 55 | 78 |
-| Evasion | 55 | 78 |
-| Stealth | 50 | 90 |
-| Hacking | 53 | 50 |
-| Lockpicking | 40 | 60 |
-| Pickpocketing | 30 | 45 |
-| Traps | 17 | 32 |
-| Intimidation | 0 | 5 |
-| Mercantile | 5 | 14 |
-| Temporal Manipulation | 0 | 0 |
-
 ### Character "Granite", Level 1 (originally pre-DLC, converted)
+
+**Currency:**
+- Stygian Coins: 0 (not yet acquired)
+- SGS Credits: 200
 
 **Base Attributes:**
 
@@ -305,8 +384,76 @@ python explore_save.py --strings 205000 207000
 - Temporal Manipulation skill is present (with 0 points allocated)
 - The game appears to convert saves on first boot after DLC installation
 
-### Skill Point Verification
+### Skill Point Formula
 
-- Level 9 total skill points: 440 (formula: 120 + 40*level = 120 + 40*8 = 440)
-- Level 10 total skill points: 480 (formula: 120 + 40*9 = 480)
-- Difference confirms 40 points per level mechanic
+- **Formula**: `total_skill_points = 80 + (40 * level)`
+- **Level detection**: `level = (total_skill_points - 80) / 40`
+
+| Level | Skill Points |
+|-------|--------------|
+| 1 | 120 |
+| 9 | 440 |
+| 10 | 480 |
+| 11 | 520 |
+
+- Each level grants 40 additional skill points
+- Level can be calculated from skill points (used as fallback when info.dat unavailable)
+
+### Experience Systems
+
+Underrail has two XP systems, chosen at character creation (cannot be changed):
+
+**Wiki Reference**: https://www.stygiansoftware.com/wiki/index.php?title=Experience
+
+#### Oddity XP System
+Players gain XP by collecting oddities and completing quests. Small numbers.
+
+**Formula**: 
+- Levels 1-13: `2 * (level + 1)` XP needed
+- Levels 14+: 30 XP needed (capped)
+- Max level: 25 (30 with Expedition DLC veteran levels)
+
+| Level | XP to Next |
+|-------|------------|
+| 1 | 4 |
+| 10 | 22 |
+| 11 | 24 |
+| 14+ | 30 |
+
+#### Classic XP System
+Players gain XP by killing enemies, quests, and skill usage. Large numbers.
+
+**Formula**: `level * 1000` XP needed
+
+| Level | XP to Next |
+|-------|------------|
+| 1 | 1,000 |
+| 10 | 10,000 |
+| 11 | 11,000 |
+| 25 | 25,000 |
+
+#### Auto-Detection
+We detect the XP system by looking for studied oddities in the save data:
+- If `Oddity.` entries exist (e.g., `Oddity.PsiBeetleBrain`): **Definitely Oddity XP**
+- If no `Oddity.` entries: **Likely Classic XP** (but could be Oddity with no oddities studied yet)
+
+The display shows:
+- `(Oddity XP)` - confirmed Oddity system
+- `(Classic XP?)` - assumed Classic but uncertain (the `?` indicates this could be an early-game Oddity character)
+
+**Limitation**: A fresh Oddity XP character who hasn't studied any oddities is indistinguishable from Classic.
+
+#### Observed Discrepancies
+The wiki formulas don't always match observed in-game values:
+
+| Level | Wiki (Oddity) | Observed |
+|-------|---------------|----------|
+| 5 | 12 | 12 ✓ |
+| 6 | 14 | 16 ✗ |
+| 8 | 18 | 18 ✓ |
+| 10 | 22 | 21 ✗ |
+| 11 | 24 | 23 ✗ |
+
+**Conclusion**: The calculated XP needed is displayed as an *estimate* (`~` prefix). 
+The actual XP value read from the save file is always accurate. Scripts should
+not enforce calculated values - players can freely edit saves.

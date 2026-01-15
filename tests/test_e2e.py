@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-End-to-end tests for skill_editor.py using real save files.
+End-to-end tests for USE (Underrail Save Editor) using real save files.
 
 Tests validate:
 - Both level 9 and level 10 saves can be read
@@ -16,11 +16,11 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from skill_editor import (
+from use.core import (
     is_packed,
     unpack_data,
     pack_data,
-    get_skill_names_from_data,
+    get_skill_entries,
     get_skill_names,
 )
 
@@ -83,8 +83,8 @@ class TestSkillParsing(unittest.TestCase):
         with open(LEVEL_10_SAVE, 'rb') as f:
             cls.level_10_data = unpack_data(f.read())
         
-        cls.level_9_skills = get_skill_names_from_data(cls.level_9_data)
-        cls.level_10_skills = get_skill_names_from_data(cls.level_10_data)
+        cls.level_9_skills = get_skill_entries(cls.level_9_data)
+        cls.level_10_skills = get_skill_entries(cls.level_10_data)
     
     def test_level_9_has_skills(self):
         """Level 9 save should have skill entries."""
@@ -130,8 +130,8 @@ class TestSkillPointProgression(unittest.TestCase):
         with open(LEVEL_10_SAVE, 'rb') as f:
             level_10_data = unpack_data(f.read())
         
-        cls.level_9_skills = get_skill_names_from_data(level_9_data)
-        cls.level_10_skills = get_skill_names_from_data(level_10_data)
+        cls.level_9_skills = get_skill_entries(level_9_data)
+        cls.level_10_skills = get_skill_entries(level_10_data)
         
         cls.level_9_total = sum(s['base'] for s in cls.level_9_skills)
         cls.level_10_total = sum(s['base'] for s in cls.level_10_skills)
@@ -199,11 +199,11 @@ class TestRoundTrip(unittest.TestCase):
             original_packed = f.read()
         
         original_unpacked = unpack_data(original_packed)
-        original_skills = get_skill_names_from_data(original_unpacked)
+        original_skills = get_skill_entries(original_unpacked)
         
         repacked = pack_data(original_unpacked)
         reunpacked = unpack_data(repacked)
-        roundtrip_skills = get_skill_names_from_data(reunpacked)
+        roundtrip_skills = get_skill_entries(reunpacked)
         
         self.assertEqual(len(original_skills), len(roundtrip_skills))
         
@@ -221,7 +221,7 @@ class TestSkillDetails(unittest.TestCase):
         with open(LEVEL_9_SAVE, 'rb') as f:
             cls.level_9_data = unpack_data(f.read())
         
-        cls.skills = get_skill_names_from_data(cls.level_9_data)
+        cls.skills = get_skill_entries(cls.level_9_data)
         cls.skill_names = get_skill_names(len(cls.skills))
         
         # Build dict for easy lookup
