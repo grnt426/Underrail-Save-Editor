@@ -1,0 +1,339 @@
+/* Underrail Save Editor - Custom Styles */
+
+:root {
+  --drop-zone-border: var(--pico-muted-border-color);
+  --drop-zone-bg: var(--pico-card-background-color);
+  --drop-zone-active-border: var(--pico-primary);
+  --drop-zone-active-bg: var(--pico-primary-focus);
+}
+
+/* Drop Zone */
+.drop-zone {
+  border: 2px dashed var(--drop-zone-border);
+  border-radius: var(--pico-border-radius);
+  background: var(--drop-zone-bg);
+  padding: 3rem 2rem;
+  text-align: center;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: var(--drop-zone-active-border);
+  background: var(--drop-zone-active-bg);
+}
+
+.drop-zone-content svg {
+  opacity: 0.5;
+  margin-bottom: 1rem;
+}
+
+.drop-zone-content p {
+  margin-bottom: 0.5rem;
+}
+
+/* Loading */
+.loading {
+  text-align: center;
+  padding: 2rem;
+}
+
+/* Error */
+.error article {
+  border-color: var(--pico-del-color);
+}
+
+/* Edit Toggle */
+.edit-toggle {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 1rem;
+}
+
+.edit-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+/* Tabs */
+.tabs ul {
+  display: flex;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.tabs li {
+  margin: 0;
+}
+
+.tabs a {
+  display: block;
+  padding: 0.75rem 1.5rem;
+  text-decoration: none;
+  color: var(--pico-muted-color);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: all 0.2s ease;
+}
+
+.tabs a:hover {
+  color: var(--pico-color);
+}
+
+.tabs a.active {
+  color: var(--pico-primary);
+  border-bottom-color: var(--pico-primary);
+}
+
+/* Tab Panels */
+.tab-panel {
+  animation: fadeIn 0.2s ease;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Stat/Skill Lists */
+.stat-row,
+.skill-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.stat-row:last-child,
+.skill-row:last-child {
+  border-bottom: none;
+}
+
+.stat-name,
+.skill-name {
+  font-weight: 500;
+}
+
+.stat-value,
+.skill-value {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.stat-base,
+.skill-base {
+  font-family: var(--pico-font-family-monospace);
+  min-width: 3ch;
+  text-align: right;
+}
+
+.stat-effective,
+.skill-effective {
+  font-family: var(--pico-font-family-monospace);
+  color: var(--pico-muted-color);
+  font-size: 0.875em;
+}
+
+/* Editable fields */
+.editable input {
+  width: 4rem;
+  padding: 0.25rem 0.5rem;
+  text-align: center;
+  font-family: var(--pico-font-family-monospace);
+}
+
+.editable input:disabled {
+  background: transparent;
+  border-color: transparent;
+  cursor: default;
+}
+
+/* Equipment Items */
+.equipment-item {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.equipment-item:last-child {
+  border-bottom: none;
+}
+
+.equipment-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 0.25rem;
+}
+
+.equipment-item-name {
+  font-weight: 500;
+}
+
+.equipment-item-category {
+  font-size: 0.75em;
+  padding: 0.125rem 0.5rem;
+  background: var(--pico-secondary-background);
+  border-radius: var(--pico-border-radius);
+  color: var(--pico-secondary);
+}
+
+.equipment-item-stats {
+  font-size: 0.875em;
+  color: var(--pico-muted-color);
+  margin-top: 0.25rem;
+}
+
+.equipment-item-stats span {
+  margin-right: 1rem;
+}
+
+/* Inventory Items */
+.inventory-category {
+  margin-bottom: 1.5rem;
+}
+
+.inventory-category h4 {
+  margin-bottom: 0.5rem;
+  color: var(--pico-muted-color);
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.inventory-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.25rem 0;
+}
+
+.inventory-item-count {
+  color: var(--pico-muted-color);
+  font-family: var(--pico-font-family-monospace);
+}
+
+/* Feats */
+.feat-item {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  margin: 0.25rem;
+  background: var(--pico-secondary-background);
+  border-radius: var(--pico-border-radius);
+  font-size: 0.875em;
+}
+
+/* Actions */
+.actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 2rem;
+  flex-wrap: wrap;
+}
+
+.actions button {
+  flex: 1;
+  min-width: 200px;
+}
+
+/* Character Card (for export) */
+.character-card {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color: #eee;
+  padding: 2rem;
+  border-radius: 12px;
+  font-family: system-ui, -apple-system, sans-serif;
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.character-card h2 {
+  margin: 0 0 0.5rem 0;
+  color: #fff;
+}
+
+.character-card .level {
+  font-size: 1.25rem;
+  color: #8b8b8b;
+  margin-bottom: 1.5rem;
+}
+
+.character-card .section {
+  margin-bottom: 1rem;
+}
+
+.character-card .section-title {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #888;
+  margin-bottom: 0.5rem;
+}
+
+.character-card .stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+}
+
+.character-card .stat-box {
+  text-align: center;
+  padding: 0.5rem;
+  background: rgba(255,255,255,0.05);
+  border-radius: 6px;
+}
+
+.character-card .stat-box .value {
+  font-size: 1.25rem;
+  font-weight: bold;
+  color: #4fc3f7;
+}
+
+.character-card .stat-box .label {
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  color: #888;
+}
+
+/* Dialog improvements */
+dialog article {
+  max-width: 600px;
+}
+
+#card-preview {
+  overflow: auto;
+  max-height: 60vh;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .actions {
+    flex-direction: column;
+  }
+  
+  .actions button {
+    width: 100%;
+  }
+  
+  .tabs ul {
+    flex-wrap: wrap;
+  }
+  
+  .tabs a {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+  }
+}

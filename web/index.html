@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Underrail Save Editor</title>
+  <!-- Pico CSS for minimal styling -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>Underrail Save Editor</h1>
+      <p>Edit your Underrail save files directly in the browser. No data leaves your computer.</p>
+    </header>
+
+    <!-- File Drop Zone -->
+    <section id="drop-zone" class="drop-zone">
+      <div class="drop-zone-content">
+        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <p>Drag and drop your <code>global.dat</code> save file here</p>
+        <p><small>or</small></p>
+        <button type="button" id="file-picker-btn">Choose File</button>
+        <input type="file" id="file-input" accept=".dat" hidden>
+      </div>
+    </section>
+
+    <!-- Loading State -->
+    <section id="loading" class="loading" hidden>
+      <p aria-busy="true">Parsing save file...</p>
+    </section>
+
+    <!-- Error Display -->
+    <section id="error" class="error" hidden>
+      <article>
+        <header>Error</header>
+        <p id="error-message"></p>
+        <footer>
+          <button type="button" id="error-dismiss">Try Again</button>
+        </footer>
+      </article>
+    </section>
+
+    <!-- Character Summary (shown after file load) -->
+    <section id="character-view" hidden>
+      <!-- Edit Mode Toggle -->
+      <div class="edit-toggle">
+        <label>
+          <input type="checkbox" id="edit-mode-toggle" role="switch">
+          Enable Editing
+        </label>
+      </div>
+
+      <!-- Character Header -->
+      <article id="character-header">
+        <header>
+          <h2 id="char-name">Character Name</h2>
+          <p>Level <span id="char-level">1</span></p>
+        </header>
+      </article>
+
+      <!-- Tabs for different sections -->
+      <nav class="tabs">
+        <ul>
+          <li><a href="#" data-tab="stats" class="active">Stats & Skills</a></li>
+          <li><a href="#" data-tab="equipment">Equipment</a></li>
+          <li><a href="#" data-tab="inventory">Inventory</a></li>
+          <li><a href="#" data-tab="feats">Feats</a></li>
+        </ul>
+      </nav>
+
+      <!-- Tab Content -->
+      <div id="tab-content">
+        <!-- Stats & Skills Tab -->
+        <div id="tab-stats" class="tab-panel active">
+          <div class="grid">
+            <article>
+              <header>Base Attributes</header>
+              <div id="attributes-list"></div>
+            </article>
+            <article>
+              <header>Skills</header>
+              <div id="skills-list"></div>
+            </article>
+          </div>
+        </div>
+
+        <!-- Equipment Tab -->
+        <div id="tab-equipment" class="tab-panel" hidden>
+          <article>
+            <header>Character Gear</header>
+            <div id="equipment-list"></div>
+          </article>
+          <article>
+            <header>Utility Slots</header>
+            <div id="utility-list"></div>
+          </article>
+        </div>
+
+        <!-- Inventory Tab -->
+        <div id="tab-inventory" class="tab-panel" hidden>
+          <article>
+            <header>Inventory</header>
+            <div id="inventory-list"></div>
+          </article>
+        </div>
+
+        <!-- Feats Tab -->
+        <div id="tab-feats" class="tab-panel" hidden>
+          <article>
+            <header>Feats</header>
+            <div id="feats-list"></div>
+          </article>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="actions">
+        <button type="button" id="download-btn" class="secondary" disabled>
+          Download Modified Save
+        </button>
+        <button type="button" id="export-card-btn" class="contrast">
+          Export Character Card
+        </button>
+        <button type="button" id="load-new-btn" class="outline">
+          Load Different Save
+        </button>
+      </div>
+    </section>
+
+    <!-- Character Card Preview (for export) -->
+    <dialog id="card-dialog">
+      <article>
+        <header>
+          <button aria-label="Close" rel="prev" id="card-dialog-close"></button>
+          <h3>Character Card Preview</h3>
+        </header>
+        <div id="card-preview"></div>
+        <footer>
+          <button type="button" id="card-copy-btn">Copy to Clipboard</button>
+          <button type="button" id="card-download-btn" class="secondary">Download Image</button>
+        </footer>
+      </article>
+    </dialog>
+  </main>
+
+  <footer class="container">
+    <small>
+      Underrail Save Editor - All processing happens locally in your browser.
+      <br>
+      Save files are never uploaded anywhere.
+    </small>
+  </footer>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
