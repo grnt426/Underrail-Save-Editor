@@ -89,7 +89,15 @@ const BinaryType = {
 } as const;
 
 /**
- * Binary reader helper class
+ * Value with byte offset tracking for binary patching
+ */
+export interface TrackedValue {
+  value: number;
+  offset: number;
+}
+
+/**
+ * Binary reader helper class with offset tracking
  */
 class BinaryReader {
   private view: DataView;
@@ -144,6 +152,14 @@ class BinaryReader {
     const value = this.view.getInt32(this.pos, true);
     this.pos += 4;
     return value;
+  }
+  
+  // Read Int32 with offset tracking
+  readInt32Tracked(): TrackedValue {
+    const offset = this.pos;
+    const value = this.view.getInt32(this.pos, true);
+    this.pos += 4;
+    return { value, offset };
   }
   
   readUInt32(): number {
@@ -462,12 +478,18 @@ export class NrbfParser {
   private readMembers(classInfo: ClassInfo): Record<string, unknown> {
     const members: Record<string, unknown> = {};
     
+    // Check if this class has S4:V or S4:MV members (stat value containers)
+    const hasStatMembers = classInfo.memberNames.some(n => n === 'S4:V' || n === 'S4:MV');
+    
     for (let i = 0; i < classInfo.memberCount; i++) {
       const memberName = classInfo.memberNames[i];
       const typeInfo = classInfo.memberTypes?.[i];
       
+      // Track offsets for S4:V and S4:MV members
+      const trackOffset = hasStatMembers && (memberName === 'S4:V' || memberName === 'S4:MV');
+      
       if (typeInfo) {
-        members[memberName] = this.readMemberValue(typeInfo);
+        members[memberName] = this.readMemberValue(typeInfo, trackOffset);
       } else {
         // Without type info, try to read inline record
         members[memberName] = this.readInlineValue();
@@ -477,10 +499,10 @@ export class NrbfParser {
     return members;
   }
   
-  private readMemberValue(typeInfo: MemberTypeInfo): unknown {
+  private readMemberValue(typeInfo: MemberTypeInfo, trackOffsets: boolean = false): unknown {
     switch (typeInfo.binaryType) {
       case BinaryType.Primitive:
-        return this.readPrimitive(typeInfo.additionalInfo as number);
+        return this.readPrimitive(typeInfo.additionalInfo as number, trackOffsets);
       case BinaryType.String:
         return this.readInlineValue();
       case BinaryType.Object:
@@ -547,7 +569,7 @@ export class NrbfParser {
     }
   }
   
-  private readPrimitive(primitiveType: number): unknown {
+  private readPrimitive(primitiveType: number, trackOffset: boolean = false): unknown {
     switch (primitiveType) {
       case PrimitiveType.Boolean:
         return this.reader.readBoolean();
@@ -562,6 +584,9 @@ export class NrbfParser {
       case PrimitiveType.UInt16:
         return this.reader.readUInt16();
       case PrimitiveType.Int32:
+        if (trackOffset) {
+          return this.reader.readInt32Tracked();
+        }
         return this.reader.readInt32();
       case PrimitiveType.UInt32:
         return this.reader.readUInt32();
@@ -748,8 +773,13 @@ export function getMember(
   }
   
   // Handle string value
-  if (value && typeof value === 'object' && 'value' in value) {
+  if (value && typeof value === 'object' && 'value' in value && !('offset' in value)) {
     return (value as { value: unknown }).value;
+  }
+  
+  // Handle TrackedValue (Int32 with offset)
+  if (value && typeof value === 'object' && 'value' in value && 'offset' in value) {
+    return (value as TrackedValue).value;
   }
   
   // Handle nested class
@@ -765,6 +795,67 @@ export function getMember(
   }
   
   return value;
+}
+
+/**
+ * Get a member value without unwrapping TrackedValue - used for offset extraction.
+ */
+export function getMemberRaw(
+  obj: NrbfClass | undefined, 
+  key: string, 
+  refMap: Map<number, NrbfClass>
+): unknown {
+  if (!obj?.members) return undefined;
+  
+  // Direct member access - this is where S4:V/S4:MV will be
+  const value = obj.members[key];
+  
+  // If the value is already a TrackedValue or number, return it directly
+  if (value !== undefined) {
+    // Check if it's a TrackedValue
+    if (value && typeof value === 'object' && 'value' in value && 'offset' in value) {
+      return value;
+    }
+    // Check if it's a plain number
+    if (typeof value === 'number') {
+      return value;
+    }
+  }
+  
+  // Handle reference
+  if (value && typeof value === 'object' && 'reference' in value) {
+    const resolved = refMap.get((value as { reference: number }).reference);
+    // If resolved object has members, return the raw value from there
+    if (resolved?.members && key in resolved.members) {
+      return resolved.members[key];
+    }
+    return resolved;
+  }
+  
+  // Handle nested class - look for the value inside
+  if (value && typeof value === 'object' && 'class_id' in value) {
+    const classId = (value as { class_id: NrbfClass }).class_id;
+    if (classId.members && key in classId.members) {
+      return classId.members[key];
+    }
+    return classId;
+  }
+  
+  return value;
+}
+
+/**
+ * Extract value and offset from a TrackedValue or plain number.
+ */
+function extractTrackedValue(raw: unknown, defaultValue: number): { value: number; offset?: number } {
+  if (raw && typeof raw === 'object' && 'value' in raw && 'offset' in raw) {
+    const tracked = raw as TrackedValue;
+    return { value: tracked.value, offset: tracked.offset };
+  }
+  if (typeof raw === 'number') {
+    return { value: raw };
+  }
+  return { value: defaultValue };
 }
 
 /**
@@ -842,10 +933,14 @@ function extractAttributes(player: NrbfClass, refMap: Map<number, NrbfClass>): A
     const attr = getMember(attrsContainer, `BA3:BA:${i}`, refMap) as NrbfClass | undefined;
     if (attr) {
       const name = getMember(attr, 'BA2:N', refMap) as string || ATTRIBUTE_NAMES[i] || `Attr ${i}`;
-      const base = getMember(attr, 'S4:V', refMap) as number || 0;
-      const effective = getMember(attr, 'S4:MV', refMap) as number || base;
+      const baseRaw = getMemberRaw(attr, 'S4:V', refMap);
+      const effectiveRaw = getMemberRaw(attr, 'S4:MV', refMap);
       
-      attributes.push({ name, base, effective, index: i });
+      // Extract value and offset from TrackedValue or plain number
+      const { value: base, offset: baseOffset } = extractTrackedValue(baseRaw, 0);
+      const { value: effective, offset: effectiveOffset } = extractTrackedValue(effectiveRaw, base);
+      
+      attributes.push({ name, base, effective, index: i, baseOffset, effectiveOffset });
     }
   }
   
@@ -863,8 +958,12 @@ function extractSkills(player: NrbfClass, refMap: Map<number, NrbfClass>, hasDLC
   for (let i = 0; i < count; i++) {
     const skill = getMember(skillsContainer, `S3:S:${i}`, refMap) as NrbfClass | undefined;
     if (skill) {
-      const base = getMember(skill, 'S4:V', refMap) as number || 0;
-      const effective = getMember(skill, 'S4:MV', refMap) as number || base;
+      const baseRaw = getMemberRaw(skill, 'S4:V', refMap);
+      const effectiveRaw = getMemberRaw(skill, 'S4:MV', refMap);
+      
+      // Extract value and offset from TrackedValue or plain number
+      const { value: base, offset: baseOffset } = extractTrackedValue(baseRaw, 0);
+      const { value: effective, offset: effectiveOffset } = extractTrackedValue(effectiveRaw, base);
       const category = SKILL_CATEGORIES[i] || 'Other';
       
       skills.push({
@@ -873,6 +972,8 @@ function extractSkills(player: NrbfClass, refMap: Map<number, NrbfClass>, hasDLC
         effective,
         category,
         index: i,
+        baseOffset,
+        effectiveOffset,
       });
     }
   }
@@ -1031,14 +1132,6 @@ function extractInventory(records: NrbfRecord[], refMap: Map<number, NrbfClass>)
     }
   }
   
-  console.log(`Found ${instanceCounts.size} item instances with counts`);
-  // Log a few sample counts
-  let sampleCount = 0;
-  for (const [id, count] of instanceCounts) {
-    if (sampleCount++ < 5) {
-      console.log(`  Instance ${id}: count=${count}`);
-    }
-  }
   
   // Now collect inventory items with their counts
   const itemsByPath = new Map<string, { path: string; category: string; name: string; counts: number[] }>();
@@ -1063,10 +1156,6 @@ function extractInventory(records: NrbfRecord[], refMap: Map<number, NrbfClass>)
     // Get count from II record if available
     const objectId = cls.id;
     const count = instanceCounts.get(objectId) || 1;
-    
-    if (count > 1) {
-      console.log(`Item ${displayName} (id=${objectId}): count=${count}`);
-    }
     
     const pathKey = path.toLowerCase();
     const existing = itemsByPath.get(pathKey);

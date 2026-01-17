@@ -8,6 +8,7 @@ export interface AppState {
   // File state
   fileName: string | null;
   header: Uint8Array | null;
+  rawData: Uint8Array | null;  // Uncompressed binary for potential patching
   saveData: SaveData | null;
   
   // UI state
@@ -22,6 +23,7 @@ export interface AppState {
 const initialState: AppState = {
   fileName: null,
   header: null,
+  rawData: null,
   saveData: null,
   isLoading: false,
   error: null,
@@ -89,11 +91,12 @@ export function startLoading(): void {
 /**
  * File loaded successfully.
  */
-export function fileLoaded(fileName: string, saveData: SaveData, header: Uint8Array): void {
+export function fileLoaded(fileName: string, saveData: SaveData, header: Uint8Array, rawData: Uint8Array): void {
   setState({
     fileName,
     saveData,
     header,
+    rawData,
     isLoading: false,
     error: null,
     hasChanges: false,

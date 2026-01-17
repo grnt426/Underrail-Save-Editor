@@ -2,7 +2,8 @@
  * Main entry point for Underrail Save Editor
  */
 
-import { parseSaveFile } from './parser';
+import { parseSaveFile, compress } from './parser';
+import * as htmlToImage from 'html-to-image';
 import {
   getState,
   subscribe,
@@ -125,15 +126,162 @@ function setupActions(): void {
     resetState();
   });
   
-  downloadBtn.addEventListener('click', () => {
-    // TODO: Implement download
-    alert('Download functionality coming soon!');
-  });
+  downloadBtn.addEventListener('click', handleDownload);
+  exportCardBtn.addEventListener('click', handleExportCard);
   
-  exportCardBtn.addEventListener('click', () => {
-    // TODO: Implement character card export
-    alert('Character card export coming soon!');
-  });
+  // Card dialog buttons
+  const cardDialog = document.getElementById('card-dialog') as HTMLDialogElement;
+  document.getElementById('card-copy-btn')?.addEventListener('click', () => copyCardToClipboard());
+  document.getElementById('card-download-btn')?.addEventListener('click', () => downloadCardAsImage());
+  document.getElementById('card-close-btn')?.addEventListener('click', () => cardDialog.close());
+}
+
+// Handle download save file
+function handleDownload(): void {
+  const state = getState();
+  if (!state.saveData || !state.header || !state.rawData) {
+    alert('No save data to download');
+    return;
+  }
+  
+  if (state.hasChanges) {
+    // Warn that editing isn't fully implemented yet
+    alert('Note: Save file editing is read-only in this version.\n\nThe original save file will be downloaded.');
+  }
+  
+  // Compress and download
+  const compressed = compress(state.rawData, state.header);
+  const blob = new Blob([compressed], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = state.fileName || 'global.dat';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Handle export character card
+async function handleExportCard(): Promise<void> {
+  const state = getState();
+  if (!state.saveData) return;
+  
+  const cardPreview = document.getElementById('card-preview')!;
+  const cardDialog = document.getElementById('card-dialog') as HTMLDialogElement;
+  
+  // Generate card HTML
+  cardPreview.innerHTML = generateCharacterCard(state.saveData);
+  
+  // Show dialog
+  cardDialog.showModal();
+}
+
+// Generate character card HTML
+function generateCharacterCard(data: SaveData): string {
+  const char = data.character || { name: 'Unknown', level: 1 };
+  const attrs = data.attributes || [];
+  const skills = data.skills || [];
+  const feats = data.feats || [];
+  
+  // Get top skills
+  const topSkills = [...skills]
+    .sort((a, b) => b.effective - a.effective)
+    .slice(0, 6);
+  
+  return `
+    <div class="character-card" id="card-content">
+      <h2>${char.name}</h2>
+      <div class="level">Level ${char.level}</div>
+      
+      <div class="section">
+        <div class="section-title">Attributes</div>
+        <div class="stats-grid">
+          ${attrs.map(attr => `
+            <div class="stat-box">
+              <div class="value">${attr.effective}</div>
+              <div class="label">${attr.name.substring(0, 3)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      
+      <div class="section">
+        <div class="section-title">Top Skills</div>
+        <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
+          ${topSkills.map(skill => `
+            <div class="stat-box">
+              <div class="value">${skill.effective}</div>
+              <div class="label">${skill.name.substring(0, 8)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      
+      ${feats.length > 0 ? `
+        <div class="section">
+          <div class="section-title">Feats (${feats.length})</div>
+          <div style="font-size: 0.7rem; color: #aaa; line-height: 1.4;">
+            ${feats.slice(0, 8).map(f => f.name).join(' • ')}${feats.length > 8 ? ' • ...' : ''}
+          </div>
+        </div>
+      ` : ''}
+      
+      <div style="margin-top: 1rem; font-size: 0.6rem; color: #555; text-align: center;">
+        Underrail Character • underrail.info
+      </div>
+    </div>
+  `;
+}
+
+// Copy card to clipboard as image
+async function copyCardToClipboard(): Promise<void> {
+  const cardContent = document.getElementById('card-content');
+  if (!cardContent) return;
+  
+  try {
+    const blob = await htmlToImage.toBlob(cardContent, {
+      backgroundColor: '#1a1a2e',
+      pixelRatio: 2,
+    });
+    
+    if (blob) {
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': blob })
+      ]);
+      alert('Card copied to clipboard!');
+    }
+  } catch (err) {
+    console.error('Failed to copy card:', err);
+    alert('Failed to copy card to clipboard. Try downloading instead.');
+  }
+}
+
+// Download card as image
+async function downloadCardAsImage(): Promise<void> {
+  const cardContent = document.getElementById('card-content');
+  if (!cardContent) return;
+  
+  const state = getState();
+  const charName = state.saveData?.character?.name || 'character';
+  
+  try {
+    const dataUrl = await htmlToImage.toPng(cardContent, {
+      backgroundColor: '#1a1a2e',
+      pixelRatio: 2,
+    });
+    
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `${charName.replace(/\s+/g, '_')}_card.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (err) {
+    console.error('Failed to download card:', err);
+    alert('Failed to generate card image.');
+  }
 }
 
 // Handle file selection
@@ -142,9 +290,9 @@ async function handleFile(file: File): Promise<void> {
   
   try {
     console.log('Parsing file:', file.name, 'Size:', file.size);
-    const { saveData, header } = await parseSaveFile(file);
+    const { saveData, header, rawData } = await parseSaveFile(file);
     console.log('Parsed save data:', saveData);
-    fileLoaded(file.name, saveData, header);
+    fileLoaded(file.name, saveData, header, rawData);
   } catch (error) {
     console.error('Failed to parse save file:', error);
     if (error instanceof Error) {
@@ -184,8 +332,8 @@ function render(state: AppState): void {
     panel.hidden = panelId !== state.activeTab;
   });
   
-  // Download button
-  downloadBtn.disabled = !state.hasChanges;
+  // Download button - always enabled when save is loaded
+  downloadBtn.disabled = !state.saveData;
 }
 
 // Render character data
@@ -251,22 +399,24 @@ function renderSkills(skills: Skill[], editMode: boolean): void {
     return `
       <div class="skill-category">
         <h4>${category}</h4>
-        ${categorySkills.map(skill => `
-          <div class="skill-row">
-            <span class="skill-name">${skill.name}</span>
-            <span class="skill-value">
-              ${editMode ? `
-                <input type="number" class="editable" value="${skill.base}" 
-                       min="0" max="999" data-skill-index="${skill.index}">
-              ` : `
-                <span class="skill-base">${skill.base}</span>
-              `}
-              ${skill.effective !== skill.base ? `
-                <span class="skill-effective">(${skill.effective})</span>
-              ` : ''}
-            </span>
-          </div>
-        `).join('')}
+        <div class="skills-grid">
+          ${categorySkills.map(skill => `
+            <div class="skill-row">
+              <span class="skill-name">${skill.name}</span>
+              <span class="skill-value">
+                ${editMode ? `
+                  <input type="number" class="editable" value="${skill.base}" 
+                         min="0" max="999" data-skill-index="${skill.index}">
+                ` : `
+                  <span class="skill-base">${skill.base}</span>
+                `}
+                ${skill.effective !== skill.base ? `
+                  <span class="skill-effective">(${skill.effective})</span>
+                ` : ''}
+              </span>
+            </div>
+          `).join('')}
+        </div>
       </div>
     `;
   }).join('');
@@ -394,12 +544,14 @@ function renderInventory(items: InventoryItem[]): void {
   inventoryList.innerHTML = categories.map(category => `
     <div class="inventory-category">
       <h4>${category}</h4>
-      ${grouped[category].map(item => `
-        <div class="inventory-item">
-          <span>${item.name}</span>
-          <span class="inventory-item-count">x${item.count}</span>
-        </div>
-      `).join('')}
+      <div class="inventory-items-grid">
+        ${grouped[category].map(item => `
+          <div class="inventory-item">
+            <span>${item.name}</span>
+            <span class="inventory-item-count">x${item.count}</span>
+          </div>
+        `).join('')}
+      </div>
     </div>
   `).join('') || '<p>No inventory items</p>';
 }

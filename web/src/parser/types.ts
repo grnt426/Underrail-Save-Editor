@@ -54,6 +54,9 @@ export interface Attribute {
   base: number;
   effective: number;
   index: number;
+  // Byte offsets for binary patching
+  baseOffset?: number;
+  effectiveOffset?: number;
 }
 
 export interface Skill {
@@ -62,6 +65,9 @@ export interface Skill {
   effective: number;
   category: SkillCategory;
   index: number;
+  // Byte offsets for binary patching
+  baseOffset?: number;
+  effectiveOffset?: number;
 }
 
 export type SkillCategory = 
