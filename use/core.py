@@ -3,46 +3,21 @@
 Core save file processing functions for Underrail Save Editor.
 
 This module handles:
-- Packing/unpacking save files (gzip compression with GUID header)
+- Loading save files via UFE (Underrail File Exporter)
 - Parsing skills, attributes, feats, XP, and currency from save data
-- Writing modified values back to save data
+- Providing structured access to game data
 
 All other modules (viewer, editor) import from here.
 """
 
-import struct
-import gzip
 from pathlib import Path
+from typing import Optional
+from .ufe_parser import parse_save, SaveData, UFEError
 
 
 # =============================================================================
 # Constants
 # =============================================================================
-
-# GUID header for packed files (16 bytes)
-PACKED_HEADER = bytes([
-    0xF9, 0x53, 0x8B, 0x83, 0x1F, 0x36, 0x32, 0x43,
-    0xBA, 0xAE, 0x0D, 0x17, 0x86, 0x5D, 0x08, 0x54
-])
-
-# Full 24-byte header for repacking (GUID + version bytes)
-PACK_HEADER_FULL = bytes([
-    0xF9, 0x53, 0x8B, 0x83, 0x1F, 0x36, 0x32, 0x43,
-    0xBA, 0xAE, 0x0D, 0x17, 0x86, 0x5D, 0x08, 0x54,
-    0xC2, 0x32, 0x0B, 0x72, 0x66, 0x00, 0x00, 0x00
-])
-
-# Pattern markers for data structures
-ESI_PATTERN = b'ESI\x02\x00\x00\x00\x02\x00\x00\x00\x09'
-SKILL_PATTERN = b'eSKC\x02\x00\x00\x00\x02\x00\x00\x00\x09'
-VERSION_MARKER = b'System.Version\x04\x00\x00\x00\x06_Major\x06_Minor\x06_Build\x09_Revision'
-XP_PATTERN = b'eGD\x01\x00\x00\x00\x07value__\x00\x08\x02\x00\x00\x00'
-
-# Currency internal paths
-CURRENCY_PATHS = {
-    'stygian_coins': b'currency\\stygiancoin',
-    'sgs_credits': b'currency\\sgscredits',
-}
 
 # Base attribute names in save file order
 STAT_NAMES = ['Strength', 'Dexterity', 'Agility', 'Constitution', 'Perception', 'Will', 'Intelligence']
@@ -104,6 +79,32 @@ FEAT_DISPLAY_NAMES = {
     'evasivemaneuvers': 'Evasive Maneuvers',
     'freerunning': 'Free Running',
     'mentalsubversion': 'Mental Subversion',
+    'nimble': 'Nimble',
+    'quicktinkering': 'Quick Tinkering',
+    'trapexpert': 'Trap Expert',
+    'interloper': 'Interloper',
+    'sprint': 'Sprint',
+    'specialattacks': 'Specialization: Unarmed Combat',
+}
+
+# Known item categories and their display names
+ITEM_CATEGORIES = {
+    'currency': 'Currency',
+    'devices': 'Devices',
+    'Devices': 'Devices',
+    'weapons': 'Weapons',
+    'Weapons': 'Weapons',
+    'armor': 'Armor',
+    'consumables': 'Consumables',
+    'grenades': 'Grenades',
+    'Grenades': 'Grenades',
+    'traps': 'Traps',
+    'components': 'Components',
+    'Components': 'Components',
+    'expendables': 'Expendables',
+    'Ammo': 'Ammo',
+    'messages': 'Messages',
+    'plot': 'Quest Items',
 }
 
 
@@ -121,8 +122,6 @@ def normalize_path(path_str: str) -> Path:
     - Mixed slashes
     - Relative and absolute paths
     """
-    # Replace forward slashes with the OS-appropriate separator
-    # Path() handles this automatically, but let's be explicit
     normalized = path_str.replace('/', '\\').replace('\\', '/')
     return Path(normalized).resolve()
 
@@ -144,24 +143,19 @@ def resolve_save_path(path_input: str | Path | None = None) -> Path:
     Raises:
         FileNotFoundError: if path doesn't exist or no save file found
     """
-    # Handle None/empty - use current directory
     if path_input is None or (isinstance(path_input, str) and not path_input.strip()):
         path = Path('.').resolve()
     elif isinstance(path_input, str):
-        # Normalize string paths (handles forward/back slashes)
         path = Path(path_input.replace('\\', '/')).resolve()
     else:
         path = Path(path_input).resolve()
     
-    # Check existence
     if not path.exists():
         raise FileNotFoundError(f"Path not found: {path}")
     
-    # If it's a file, return it directly
     if path.is_file():
         return path
     
-    # It's a directory - search for save files
     if path.is_dir():
         candidates = [
             path / "global.dat",
@@ -179,106 +173,85 @@ def resolve_save_path(path_input: str | Path | None = None) -> Path:
     raise FileNotFoundError(f"Path is neither file nor directory: {path}")
 
 
-# =============================================================================
-# File Packing/Unpacking
-# =============================================================================
-
-def is_packed(data: bytes) -> bool:
-    """Check if the file is in packed (compressed) format."""
-    return data[:16] == PACKED_HEADER
-
-
-def unpack_data(packed_data: bytes) -> bytes:
-    """Unpack a compressed global.dat file."""
-    # Skip 24-byte header (16-byte GUID + 8-byte version)
-    compressed = packed_data[24:]
-    return gzip.decompress(compressed)
-
-
-def pack_data(unpacked_data: bytes) -> bytes:
-    """Pack data back into global.dat format."""
-    compressed = gzip.compress(unpacked_data)
-    return PACK_HEADER_FULL + compressed
-
-
-def load_save(path_input: str | Path | None = None) -> bytes:
-    """
-    Load and unpack a save file, returning raw bytes.
-    
-    Accepts file path, directory path, or None (current directory).
-    Handles mixed slash styles.
-    """
-    path = resolve_save_path(path_input)
-    
-    with open(path, 'rb') as f:
-        data = f.read()
-    
-    if is_packed(data):
-        data = unpack_data(data)
-    
-    return data
-
-
 def find_save_file(save_dir: str | Path | None = None) -> tuple:
     """
     Find save file in directory, checking multiple locations.
     
-    Accepts file path, directory path, or None (current directory).
-    Handles mixed slash styles.
-    
     Returns (path, is_packed, data) or (None, None, None) if not found.
+    Note: is_packed is always True now (UFE handles this internally).
     """
     try:
         path = resolve_save_path(save_dir)
+        return (path, True, None)  # UFE handles unpacking
     except FileNotFoundError:
         return (None, None, None)
+
+
+# =============================================================================
+# Save Data Loading
+# =============================================================================
+
+# Cache for parsed save data
+_save_cache: dict[Path, SaveData] = {}
+
+
+def load_save_data(path_input: str | Path | None = None, use_cache: bool = True) -> SaveData:
+    """
+    Load and parse a save file, returning structured SaveData.
     
-    try:
-        with open(path, 'rb') as f:
-            data = f.read()
-        return (path, is_packed(data), data)
-    except (PermissionError, IOError):
-        return (None, None, None)
+    Args:
+        path_input: Path to save file, directory, or None for current directory
+        use_cache: If True, return cached data if available
+    
+    Returns:
+        SaveData object with parsed game data
+    """
+    path = resolve_save_path(path_input)
+    
+    if use_cache and path in _save_cache:
+        return _save_cache[path]
+    
+    save_data = parse_save(path, keep_json=False)
+    _save_cache[path] = save_data
+    
+    return save_data
+
+
+def clear_cache():
+    """Clear the save data cache."""
+    _save_cache.clear()
 
 
 # =============================================================================
 # Skill Data
 # =============================================================================
 
-def get_skill_entries(data: bytes) -> list:
+def get_skill_entries(data_or_path) -> list:
     """
-    Find all skill entries in save data.
+    Get all skill entries from save data.
     
-    Returns list of dicts with 'offset', 'base', 'mod' keys.
+    Args:
+        data_or_path: Either a SaveData object or a path to load
     
-    Pattern structure:
-        eSKC (4 bytes) + markers (9 bytes) + variable_type_id (4 bytes)
-        + base_value (4 bytes) + effective_value (4 bytes)
+    Returns list of dicts with 'name', 'base', 'mod' keys.
     """
-    idx = 0
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
+    else:
+        save_data = load_save_data(data_or_path)
+    
+    raw_skills = save_data.get_skills()
+    skill_names = get_skill_names(len(raw_skills))
+    
     results = []
-    
-    while True:
-        idx = data.find(SKILL_PATTERN, idx)
-        if idx == -1:
-            break
-        
-        # Values are at: pattern_start + len(pattern) + 4 (skip variable type ID)
-        value_offset = idx + len(SKILL_PATTERN) + 4
-        
-        if value_offset + 8 <= len(data):
-            base = struct.unpack('<i', data[value_offset:value_offset+4])[0]
-            mod = struct.unpack('<i', data[value_offset+4:value_offset+8])[0]
-            
-            # Filter for reasonable skill values
-            if 0 <= base <= 300 and 0 <= mod <= 600:
-                results.append({
-                    'offset': value_offset,
-                    'base': base,
-                    'mod': mod
-                })
-        
-        idx += 1
+    for i, skill in enumerate(raw_skills):
+        name = skill_names[i] if i < len(skill_names) else f"Skill {i}"
+        results.append({
+            'name': name,
+            'base': skill['base'],
+            'mod': skill['effective'],
+            'offset': i  # Use index as offset for compatibility
+        })
     
     return results
 
@@ -290,165 +263,95 @@ def get_skill_names(num_skills: int) -> list:
     return SKILL_NAMES_BASE
 
 
-def write_skill_value(data: bytearray, offset: int, base_value: int, mod_value: int = None):
-    """Write a skill value to the data."""
-    struct.pack_into('<i', data, offset, base_value)
-    if mod_value is not None:
-        struct.pack_into('<i', data, offset + 4, mod_value)
-
-
 # =============================================================================
 # Base Attributes (Stats)
 # =============================================================================
 
-def get_stat_entries(data: bytes) -> list:
+def get_stat_entries(data_or_path) -> list:
     """
-    Find all base attribute entries in save data.
+    Get all base attribute entries from save data.
     
-    Returns list of dicts with 'offset', 'base', 'effective' keys.
+    Returns list of dicts with 'name', 'base', 'effective' keys.
     """
-    idx = 0
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
+    else:
+        save_data = load_save_data(data_or_path)
+    
+    attributes = save_data.get_base_attributes()
+    
     results = []
-    
-    while True:
-        idx = data.find(ESI_PATTERN, idx)
-        if idx == -1:
-            break
-        
-        value_offset = idx + len(ESI_PATTERN) + 4
-        
-        if value_offset + 8 <= len(data):
-            base = struct.unpack('<i', data[value_offset:value_offset+4])[0]
-            effective = struct.unpack('<i', data[value_offset+4:value_offset+8])[0]
-            
-            # Filter for reasonable attribute values
-            if 1 <= base <= 30 and 1 <= effective <= 50:
-                results.append({
-                    'offset': value_offset,
-                    'base': base,
-                    'effective': effective
-                })
-        idx += 1
+    for i, attr in enumerate(attributes):
+        results.append({
+            'name': attr['name'],
+            'base': attr['base'],
+            'effective': attr['effective'],
+            'offset': i  # Use index as offset for compatibility
+        })
     
     return results
-
-
-def write_stat_value(data: bytearray, offset: int, base_value: int, effective_value: int = None):
-    """Write a stat value to the data."""
-    struct.pack_into('<i', data, offset, base_value)
-    if effective_value is not None:
-        struct.pack_into('<i', data, offset + 4, effective_value)
 
 
 # =============================================================================
 # Character Info
 # =============================================================================
 
-def find_character_name(data: bytes) -> str:
-    """Find character name in save data."""
-    for i in range(len(data) - 50):
-        if (data[i] == 0x06 and data[i+3:i+5] == b'\x00\x00'):
-            length_offset = i + 5
-            length = data[length_offset]
-            
-            if 3 <= length <= 30:
-                name_start = length_offset + 1
-                name_end = name_start + length
-                
-                if name_end + 20 <= len(data):
-                    potential_name = data[name_start:name_end]
-                    if all(32 <= b <= 126 for b in potential_name):
-                        if b'eG' in data[name_end:name_end+20]:
-                            return potential_name.decode('ascii')
-    return None
-
-
-def find_game_version(data: bytes) -> tuple:
-    """Find game version (System.Version structure)."""
-    idx = data.find(VERSION_MARKER)
+def find_character_name(data_or_path) -> Optional[str]:
+    """Get character name from save data."""
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
+    else:
+        save_data = load_save_data(data_or_path)
     
-    if idx >= 0:
-        values_offset = idx + len(VERSION_MARKER) + 4 + 4
-        if values_offset + 16 <= len(data):
-            major = struct.unpack('<i', data[values_offset:values_offset+4])[0]
-            minor = struct.unpack('<i', data[values_offset+4:values_offset+8])[0]
-            build = struct.unpack('<i', data[values_offset+8:values_offset+12])[0]
-            revision = struct.unpack('<i', data[values_offset+12:values_offset+16])[0]
-            
-            if 0 <= major <= 10 and 0 <= minor <= 100 and 0 <= build <= 1000 and 0 <= revision <= 10000:
-                return (major, minor, build, revision)
-    return None
+    return save_data.get_character_name()
 
 
-def find_character_level(save_path: Path, total_skill_points: int = None) -> int:
+def find_game_version(data_or_path) -> Optional[tuple]:
+    """Get game version (System.Version structure)."""
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
+    else:
+        save_data = load_save_data(data_or_path)
+    
+    return save_data.get_game_version()
+
+
+def find_character_level(save_path_or_data, total_skill_points: int = None) -> Optional[int]:
     """
-    Find character level from info.dat or calculate from skill points.
+    Get character level from save data.
+    
+    Args:
+        save_path_or_data: Path or SaveData object
+        total_skill_points: Unused, kept for compatibility
     """
-    info_paths = [
-        save_path.parent / 'info.dat',
-        save_path.parent.parent / 'info.dat',
-    ]
+    if isinstance(save_path_or_data, SaveData):
+        return save_path_or_data.get_character_level()
     
-    for info_path in info_paths:
-        if not info_path.exists():
-            continue
-        
-        try:
-            with open(info_path, 'rb') as f:
-                info_data = f.read()
-            
-            if is_packed(info_data):
-                info_data = unpack_data(info_data)
-            
-            cn_key = info_data.find(b'SGI:CN')
-            cl_key = info_data.find(b'SGI:CL')
-            
-            if cn_key >= 0 and cl_key >= 0:
-                for i in range(180, min(350, len(info_data) - 20)):
-                    if all(32 <= info_data[j] <= 126 for j in range(i, min(i+3, len(info_data)))):
-                        str_end = i
-                        while str_end < len(info_data) and 32 <= info_data[str_end] <= 126:
-                            str_end += 1
-                        str_len = str_end - i
-                        
-                        if 3 <= str_len <= 30:
-                            if str_end + 4 <= len(info_data):
-                                level = struct.unpack('<i', info_data[str_end:str_end+4])[0]
-                                if 1 <= level <= 30:
-                                    return level
-        except Exception:
-            continue
-    
-    # Fallback: calculate from total skill points
-    # Formula: total_skill_points = 80 + (40 * level)
-    if total_skill_points is not None and total_skill_points >= 120:
-        calculated_level = (total_skill_points - 80) // 40
-        if 1 <= calculated_level <= 30:
-            expected_points = 80 + (40 * calculated_level)
-            if abs(total_skill_points - expected_points) <= 40:
-                return calculated_level
-    
-    return None
+    # If it's a path, try to load the save
+    try:
+        save_data = load_save_data(save_path_or_data)
+        return save_data.get_character_level()
+    except (FileNotFoundError, UFEError):
+        return None
 
 
 # =============================================================================
 # Experience Points
 # =============================================================================
 
-def find_xp_current(data: bytes) -> int:
-    """Find current XP using the eGD + value__ pattern."""
-    idx = data.find(XP_PATTERN)
+def find_xp_current(data_or_path) -> Optional[int]:
+    """
+    Find current XP.
     
-    if idx != -1:
-        value_offset = idx + len(XP_PATTERN)
-        if value_offset + 4 <= len(data):
-            xp = struct.unpack('<i', data[value_offset:value_offset+4])[0]
-            if 0 <= xp <= 10000000:
-                return xp
+    Note: XP is now calculated based on oddities studied.
+    The game uses oddity XP by default in modern versions.
+    """
+    # XP tracking is complex in the oddity system
+    # For now, return None as the exact XP format needs more research
     return None
 
 
-def detect_xp_system(data: bytes) -> tuple:
+def detect_xp_system(data_or_path) -> tuple:
     """
     Detect XP system by looking for studied oddities.
     
@@ -456,8 +359,24 @@ def detect_xp_system(data: bytes) -> tuple:
     - ('oddity', True) - Definitely Oddity XP
     - ('classic', False) - Likely Classic XP (uncertain)
     """
-    if b'Oddity.' in data:
-        return ('oddity', True)
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
+    else:
+        save_data = load_save_data(data_or_path)
+    
+    # Check for studied oddities in the player's oddity collection
+    player = save_data.get_player()
+    if player:
+        # PC1:O contains oddity study data
+        # If any oddities are studied, it's the oddity XP system
+        for record in save_data._records:
+            obj = record.get('class') or record.get('class_id')
+            if obj:
+                members = obj.get('members', {})
+                for key in members:
+                    if 'Oddity.' in str(members.get(key, '')):
+                        return ('oddity', True)
+    
     return ('classic', False)
 
 
@@ -478,43 +397,26 @@ def calculate_xp_needed(level: int, xp_system: str = 'oddity') -> int:
 # Currency
 # =============================================================================
 
-def find_currency(data: bytes) -> dict:
+def find_currency(data_or_path) -> dict:
     """Find currency counts (Stygian Coins and SGS Credits)."""
-    results = {}
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
+    else:
+        save_data = load_save_data(data_or_path)
     
-    for name, path in CURRENCY_PATHS.items():
-        idx = data.find(path)
-        if idx == -1:
-            results[name] = None
-            continue
-        
-        id_offset = idx + len(path) + 1
-        if id_offset + 2 <= len(data):
-            item_id = struct.unpack('<H', data[id_offset:id_offset+2])[0]
-            
-            ref_id = item_id - 1
-            id_bytes_ref = struct.pack('<H', ref_id) + b'\x00\x00'
-            
-            ref_idx = 0
-            found_count = None
-            
-            while True:
-                ref_idx = data.find(b'\x09' + id_bytes_ref, ref_idx)
-                if ref_idx == -1:
-                    break
-                
-                for offset_back in [4, 5, 6, 7, 8]:
-                    if ref_idx >= offset_back:
-                        potential_count = struct.unpack('<i', data[ref_idx-offset_back:ref_idx-offset_back+4])[0]
-                        if 0 <= potential_count <= 100000:
-                            found_count = potential_count
-                            break
-                
-                if found_count is not None:
-                    break
-                ref_idx += 1
-            
-            results[name] = found_count
+    results = {
+        'stygian_coins': None,
+        'sgs_credits': None
+    }
+    
+    # Search inventory items for currency
+    items = save_data.get_inventory_items()
+    for item in items:
+        path = item.get('path', '').lower()
+        if 'stygiancoin' in path:
+            results['stygian_coins'] = item.get('count', 0)
+        elif 'sgscredits' in path:
+            results['sgs_credits'] = item.get('count', 0)
     
     return results
 
@@ -523,74 +425,327 @@ def find_currency(data: bytes) -> dict:
 # DLC Detection
 # =============================================================================
 
-def detect_dlc(data: bytes, skill_count: int) -> dict:
+def detect_dlc(data_or_path, skill_count: int = None) -> dict:
     """Detect installed DLC based on save file content."""
-    dlc = {
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
+    else:
+        save_data = load_save_data(data_or_path)
+    
+    if skill_count is None:
+        skills = save_data.get_skills()
+        skill_count = len(skills)
+    
+    return {
         'expedition': skill_count >= 24,
     }
-    
-    if b'xpbl_' in data or b'expedition_' in data:
-        dlc['expedition'] = True
-    
-    return dlc
 
 
 # =============================================================================
 # Feats
 # =============================================================================
 
-def find_feats(data: bytes, skills: list = None) -> list:
+def find_feats(data_or_path, skills: list = None) -> list:
     """
     Find player feats in the save data.
     
-    Pattern: \\x0a\\x0a\\x06 XX XX \\x00\\x00 + length_byte + feat_name
+    Returns list of dicts with 'name', 'internal' keys.
     """
-    results = []
-    seen_offsets = set()
-    
-    if skills:
-        last_skill_offset = skills[-1]['offset']
-        search_start = last_skill_offset
-        search_end = min(len(data), last_skill_offset + 5000)
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
     else:
-        search_start = len(data) // 4
-        search_end = len(data) * 3 // 4
+        save_data = load_save_data(data_or_path)
     
-    feat_header = b'\x0a\x0a\x06'
+    raw_feats = save_data.get_feats()
     
-    idx = search_start
-    while idx < search_end:
-        idx = data.find(feat_header, idx, search_end)
-        if idx == -1:
-            break
-        
-        length_offset = idx + 7
-        if length_offset >= len(data):
-            idx += 1
-            continue
-        
-        length = data[length_offset]
-        if 1 <= length <= 30:
-            name_start = length_offset + 1
-            name_end = name_start + length
-            
-            if name_end <= len(data) and name_start not in seen_offsets:
-                try:
-                    feat_name = data[name_start:name_end].decode('ascii')
-                    if feat_name.islower() and feat_name.isalpha():
-                        seen_offsets.add(name_start)
-                        display_name = FEAT_DISPLAY_NAMES.get(feat_name, feat_name.capitalize())
-                        results.append({
-                            'name': display_name,
-                            'internal': feat_name,
-                            'offset': name_start
-                        })
-                except (UnicodeDecodeError, ValueError):
-                    pass
-        
-        idx += 1
+    results = []
+    for feat in raw_feats:
+        internal = feat.get('internal', '')
+        display_name = FEAT_DISPLAY_NAMES.get(internal, internal.replace('_', ' ').title())
+        results.append({
+            'name': display_name,
+            'internal': internal,
+            'offset': 0  # Not used with UFE parser
+        })
     
     return results
+
+
+# =============================================================================
+# Inventory
+# =============================================================================
+
+def _extract_item_display_name(path: str) -> str:
+    """
+    Convert item path to display name.
+    
+    Uses item name mappings extracted from game files (.item files in rules/items/).
+    Falls back to pattern-based conversion for unmapped items.
+    """
+    import re
+    from .item_names import get_display_name
+    
+    name = path.split('\\')[-1]
+    name_lower = name.lower()
+    
+    # First, try to get the display name from game file mappings
+    display_name = get_display_name(name_lower)
+    if display_name:
+        return display_name
+    
+    # Fallback: pattern-based conversion for unmapped items
+    name = name.replace('_', ' ')
+    name = re.sub(r'([a-z])([A-Z])', r'\1 \2', name)
+    name = re.sub(r'([a-zA-Z])(\d+)$', r'\1 \2', name)
+    
+    words = name.split()
+    result_words = []
+    
+    acronyms = {'emp', 'he', 'tnt', 'smg', 'em', 'jhp', 'ap', 'hp', 'sgs', 'li', 'ai', 'mk'}
+    
+    for word in words:
+        word_lower = word.lower()
+        if word_lower in acronyms:
+            result_words.append(word.upper())
+        else:
+            result_words.append(word.capitalize())
+    
+    return ' '.join(result_words)
+
+
+def find_inventory_items(data_or_path) -> list:
+    """
+    Find all inventory items in save data.
+    
+    Returns list of dicts with:
+        - 'path': internal item path (e.g., 'devices\\fishingrod')
+        - 'name': display name (e.g., 'Fishing Rod')
+        - 'category': item category (e.g., 'Devices')
+        - 'count': quantity of this item
+        - 'id': internal item ID
+    """
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
+    else:
+        save_data = load_save_data(data_or_path)
+    
+    raw_items = save_data.get_inventory_items()
+    
+    items = []
+    for item in raw_items:
+        path = item.get('path', '')
+        if not path or '\\' not in path:
+            continue
+        
+        # Skip message items
+        if path.startswith('messages\\'):
+            continue
+        
+        parts = path.split('\\')
+        category = ITEM_CATEGORIES.get(parts[0], parts[0].title())
+        display_name = _extract_item_display_name(path)
+        
+        items.append({
+            'path': path,
+            'name': display_name,
+            'category': category,
+            'count': item.get('count', 1),
+            'id': item.get('id'),
+            'index': item.get('id', 0),
+            'offset': 0,  # Not used with UFE parser
+            'durability': item.get('durability', 0),
+            'battery': item.get('battery', 0),
+        })
+    
+    return items
+
+
+def find_equipped_items(data_or_path) -> dict:
+    """
+    Find equipped items in save data.
+    
+    Returns dict with:
+        - 'character_gear': Items worn on character (armor, gloves, boots, head, shield, weapons)
+        - 'utility_slots': Items assigned to utility belt slots (grenades)
+        - 'hotbar': Items assigned to hotbar slots (not yet implemented)
+    """
+    if isinstance(data_or_path, SaveData):
+        save_data = data_or_path
+    else:
+        save_data = load_save_data(data_or_path)
+    
+    equipped = {
+        'character_gear': [],
+        'utility_slots': [],
+        'hotbar': [],
+    }
+    
+    # Get all crafted/unique items (these include equipped gear)
+    all_items = save_data.get_crafted_items()
+    
+    # Category keywords for classification
+    armor_keywords = ['overcoat', 'armor', 'vest', 'jacket', 'suit', 'robe']
+    boots_keywords = ['boot', 'tabi', 'shoe', 'sandal']
+    head_keywords = ['balaclava', 'helmet', 'goggles', 'mask', 'hood', 'cap']
+    gloves_keywords = ['glove']
+    shield_keywords = ['shield', 'emitter']
+    weapon_keywords = ['knife', 'sword', 'hammer', 'pistol', 'rifle', 'crossbow', 'fist']
+    
+    for item in all_items:
+        name = item.get('name', '')
+        name_lower = name.lower()
+        
+        # Skip items that are clearly not equipment
+        if not name or len(name) < 3:
+            continue
+        
+        # Skip descriptions (usually start with "This" or "These")
+        if name_lower.startswith(('this ', 'these ', 'a ', 'an ')):
+            continue
+        
+        # Classify the item
+        category = None
+        
+        # Check if it's a weapon (has weapon stats)
+        if item.get('weapon'):
+            category = 'Weapons'
+        elif any(kw in name_lower for kw in gloves_keywords):
+            category = 'Gloves'
+        elif any(kw in name_lower for kw in boots_keywords):
+            category = 'Boots'
+        elif any(kw in name_lower for kw in head_keywords):
+            category = 'Head'
+        elif any(kw in name_lower for kw in shield_keywords):
+            category = 'Shield'
+        elif any(kw in name_lower for kw in armor_keywords):
+            category = 'Armor'
+        
+        if category:
+            gear_item = {
+                'path': None,
+                'name': name,
+                'category': category,
+                'id': item.get('id'),
+                'offset': 0,
+                'value': item.get('value'),
+                'weight': item.get('weight'),
+            }
+            
+            # Add weapon stats if applicable
+            if item.get('weapon'):
+                weapon = item['weapon']
+                gear_item['weapon'] = {
+                    'damage_min': weapon.get('damage_min'),
+                    'damage_max': weapon.get('damage_max'),
+                    'ap_cost': weapon.get('ap_cost'),
+                    'crit_chance': weapon.get('crit_chance'),
+                    'crit_damage': weapon.get('crit_damage'),
+                }
+            
+            equipped['character_gear'].append(gear_item)
+    
+    # Get inventory items for utility slots (grenades)
+    inventory_items = save_data.get_inventory_items()
+    
+    # Group grenades (these could be utility belt items)
+    grenade_items = []
+    for item in inventory_items:
+        category = item.get('category', '').lower()
+        if category == 'grenades':
+            display_name = _extract_item_display_name(item.get('path', ''))
+            grenade_items.append({
+                'path': item.get('path'),
+                'name': display_name,
+                'category': 'Grenades',
+                'count': item.get('count', 1),
+                'id': item.get('id'),
+                'offset': 0,
+            })
+    
+    # Note: We can't easily distinguish utility belt grenades from inventory grenades
+    # without deeper save file analysis. For now, show all grenades as utility slots
+    # if there are 4 or fewer (typical utility belt size).
+    if len(grenade_items) <= 4:
+        equipped['utility_slots'] = grenade_items
+    else:
+        # Show first 4 as utility slots (approximation)
+        equipped['utility_slots'] = grenade_items[:4]
+    
+    return equipped
+
+
+def get_equipment_summary(data_or_path) -> dict:
+    """
+    Get a summary of equipped items.
+    
+    Returns dict with:
+        - 'character_gear': List of items equipped on character
+        - 'utility_slots': List of items in utility belt slots
+        - 'hotbar': List of items assigned to hotbar
+        - 'total_equipped': Total number of equipped items
+    """
+    equipped = find_equipped_items(data_or_path)
+    
+    return {
+        'character_gear': equipped['character_gear'],
+        'utility_slots': equipped['utility_slots'],
+        'hotbar': equipped['hotbar'],
+        'total_equipped': (
+            len(equipped['character_gear']) +
+            len(equipped['utility_slots']) +
+            len(equipped['hotbar'])
+        ),
+    }
+
+
+def get_inventory_summary(data_or_path) -> dict:
+    """
+    Get a summary of inventory items grouped by category.
+    
+    Returns dict with:
+        - 'items': list of all items (merged by path)
+        - 'by_category': dict of category -> list of items
+        - 'total_items': total number of unique item types
+        - 'total_stacks': total number of stacks (including duplicates)
+    """
+    raw_items = find_inventory_items(data_or_path)
+    
+    # Merge items with same path
+    from collections import defaultdict
+    items_by_key = defaultdict(list)
+    for item in raw_items:
+        merge_key = item['path'].lower()
+        items_by_key[merge_key].append(item)
+    
+    merged_items = []
+    for merge_key, key_items in items_by_key.items():
+        total_count = sum(item['count'] for item in key_items)
+        individual_counts = [item['count'] for item in key_items]
+        
+        merged_item = {
+            'path': key_items[0]['path'],
+            'name': key_items[0]['name'],
+            'category': key_items[0]['category'],
+            'count': total_count,
+            'stacks': len(key_items),
+            'stack_counts': individual_counts if len(key_items) > 1 else None,
+        }
+        merged_items.append(merged_item)
+    
+    # Sort by category, then by name
+    merged_items.sort(key=lambda x: (x['category'], x['name']))
+    
+    # Group by category
+    by_category = defaultdict(list)
+    for item in merged_items:
+        by_category[item['category']].append(item)
+    
+    return {
+        'items': merged_items,
+        'by_category': dict(by_category),
+        'total_items': len(merged_items),
+        'total_stacks': len(raw_items),
+    }
 
 
 # =============================================================================
@@ -605,3 +760,55 @@ def calculate_max_skill_per_level(level: int) -> int:
 def calculate_total_skill_points(level: int) -> int:
     """Calculate total skill points available at given level."""
     return 120 + (40 * level)
+
+
+# =============================================================================
+# Legacy Compatibility
+# =============================================================================
+
+# These functions are kept for backward compatibility but now use UFE
+
+def load_save(path_input: str | Path | None = None) -> bytes:
+    """
+    Legacy function - loads save data.
+    
+    Note: This now returns an empty bytes object since UFE handles parsing.
+    Use load_save_data() instead for the new API.
+    """
+    # For backward compatibility, just return empty bytes
+    # The actual parsing is done via load_save_data()
+    return b''
+
+
+def is_packed(data: bytes) -> bool:
+    """Legacy function - always returns True (UFE handles packing)."""
+    return True
+
+
+def unpack_data(packed_data: bytes) -> bytes:
+    """Legacy function - returns input (UFE handles unpacking)."""
+    return packed_data
+
+
+def pack_data(unpacked_data: bytes) -> bytes:
+    """Legacy function - returns input (not implemented with UFE)."""
+    raise NotImplementedError(
+        "Direct binary packing is not supported with UFE parser. "
+        "Use UFE's patch functionality instead."
+    )
+
+
+def write_skill_value(data: bytearray, offset: int, base_value: int, mod_value: int = None):
+    """Legacy function - not implemented with UFE parser."""
+    raise NotImplementedError(
+        "Direct binary writing is not supported with UFE parser. "
+        "Use UFE's patch functionality instead."
+    )
+
+
+def write_stat_value(data: bytearray, offset: int, base_value: int, effective_value: int = None):
+    """Legacy function - not implemented with UFE parser."""
+    raise NotImplementedError(
+        "Direct binary writing is not supported with UFE parser. "
+        "Use UFE's patch functionality instead."
+    )

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from .core import (
-    load_save,
+    load_save_data,
     resolve_save_path,
     find_character_name,
     find_game_version,
@@ -25,6 +25,8 @@ from .core import (
     get_skill_names,
     find_feats,
     detect_dlc,
+    get_inventory_summary,
+    get_equipment_summary,
     STAT_NAMES,
     SKILL_CATEGORIES,
 )
@@ -33,14 +35,14 @@ from .core import (
 def display_character_data(save_path: Path):
     """Load and display all character data from a save file."""
     
-    # Load save
-    data = load_save(save_path)
+    # Load save data via UFE parser
+    save_data = load_save_data(save_path)
     
     # Get character info
-    char_name = find_character_name(data)
-    version = find_game_version(data)
-    skills = get_skill_entries(data)
-    dlc = detect_dlc(data, len(skills) if skills else 0)
+    char_name = find_character_name(save_data)
+    version = find_game_version(save_data)
+    skills = get_skill_entries(save_data)
+    dlc = detect_dlc(save_data, len(skills) if skills else 0)
     
     # Header
     print()
@@ -64,14 +66,14 @@ def display_character_data(save_path: Path):
     total_skill_points = sum(s['base'] for s in skills) if skills else None
     
     # Character level and XP
-    char_level = find_character_level(save_path, total_skill_points)
+    char_level = find_character_level(save_data, total_skill_points)
     if char_level is not None:
         print(f"Level: {char_level}")
     
     # XP system detection
-    xp_system, xp_certain = detect_xp_system(data)
+    xp_system, xp_certain = detect_xp_system(save_data)
     
-    xp = find_xp_current(data)
+    xp = find_xp_current(save_data)
     if xp is not None:
         if char_level is not None:
             xp_needed = calculate_xp_needed(char_level, xp_system)
@@ -89,7 +91,7 @@ def display_character_data(save_path: Path):
     print()
     
     # Currency
-    currency = find_currency(data)
+    currency = find_currency(save_data)
     has_currency = any(v is not None for v in currency.values())
     if has_currency:
         print("CURRENCY")
@@ -101,7 +103,7 @@ def display_character_data(save_path: Path):
         print()
     
     # Base Stats
-    stats = get_stat_entries(data)
+    stats = get_stat_entries(save_data)
     if stats:
         print("BASE ATTRIBUTES")
         print("-" * 40)
@@ -144,12 +146,95 @@ def display_character_data(save_path: Path):
         print()
     
     # Feats
-    feats = find_feats(data, skills)
+    feats = find_feats(save_data, skills)
     if feats:
         print("FEATS")
         print("-" * 40)
         for feat in feats:
             print(f"  {feat['name']}")
+        print()
+    
+    # Equipment
+    equipment = get_equipment_summary(save_data)
+    if equipment['total_equipped'] > 0:
+        print("EQUIPPED")
+        print("-" * 40)
+        
+        # Character gear (armor, weapons, belt)
+        if equipment['character_gear']:
+            print("\n  Character Gear:")
+            for item in equipment['character_gear']:
+                print(f"    {item['name']:<30} [{item['category']}]")
+                stats = []
+                if item.get('value') is not None:
+                    stats.append(f"Value: {item['value']:,.0f}")
+                if item.get('weight') is not None:
+                    stats.append(f"Weight: {item['weight']:.1f}")
+                if stats:
+                    print(f"      {', '.join(stats)}")
+        
+        # Utility slots (belt slots for grenades, tools, etc.)
+        if equipment['utility_slots']:
+            print("\n  Utility Slots:")
+            for item in equipment['utility_slots']:
+                count = item.get('count', 1)
+                if count > 1:
+                    print(f"    {item['name']:<30} x{count}")
+                else:
+                    print(f"    {item['name']:<30}")
+        
+        # Hotbar items
+        if equipment['hotbar']:
+            print("\n  Hotbar:")
+            for item in equipment['hotbar']:
+                print(f"    {item['name']:<30} [{item['category']}]")
+        
+        print()
+        print("-" * 40)
+        print(f"  Total equipped: {equipment['total_equipped']}")
+        print()
+    
+    # Inventory
+    inventory = get_inventory_summary(save_data)
+    if inventory['items']:
+        print("INVENTORY")
+        print("-" * 40)
+        
+        # Display by category, excluding currency (already shown above)
+        category_order = ['Weapons', 'Armor', 'Consumables', 'Devices', 'Grenades', 
+                         'Traps', 'Components', 'Expendables', 'Ammo', 'Quest Items']
+        
+        for category in category_order:
+            if category in inventory['by_category']:
+                cat_items = inventory['by_category'][category]
+                print(f"\n  {category}:")
+                for item in cat_items:
+                    # Format count display
+                    if item['stack_counts']:
+                        # Multiple stacks - show breakdown
+                        stack_str = '+'.join(str(c) for c in item['stack_counts'])
+                        count_str = f"x{item['count']} ({stack_str})"
+                    else:
+                        count_str = f"x{item['count']}"
+                    
+                    print(f"    {item['name']:<30} {count_str}")
+        
+        # Show any remaining categories
+        for category, cat_items in sorted(inventory['by_category'].items()):
+            if category not in category_order and category != 'Currency':
+                print(f"\n  {category}:")
+                for item in cat_items:
+                    if item['stack_counts']:
+                        stack_str = '+'.join(str(c) for c in item['stack_counts'])
+                        count_str = f"x{item['count']} ({stack_str})"
+                    else:
+                        count_str = f"x{item['count']}"
+                    print(f"    {item['name']:<30} {count_str}")
+        
+        print()
+        print("-" * 40)
+        print(f"  Total unique items: {inventory['total_items']}")
+        print(f"  Total stacks: {inventory['total_stacks']}")
         print()
     
     print("=" * 60)
