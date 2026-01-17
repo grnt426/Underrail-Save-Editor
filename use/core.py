@@ -173,18 +173,16 @@ def resolve_save_path(path_input: str | Path | None = None) -> Path:
     raise FileNotFoundError(f"Path is neither file nor directory: {path}")
 
 
-def find_save_file(save_dir: str | Path | None = None) -> tuple:
+def find_save_file(save_dir: str | Path | None = None) -> Optional[Path]:
     """
     Find save file in directory, checking multiple locations.
     
-    Returns (path, is_packed, data) or (None, None, None) if not found.
-    Note: is_packed is always True now (UFE handles this internally).
+    Returns the path to the save file, or None if not found.
     """
     try:
-        path = resolve_save_path(save_dir)
-        return (path, True, None)  # UFE handles unpacking
+        return resolve_save_path(save_dir)
     except FileNotFoundError:
-        return (None, None, None)
+        return None
 
 
 # =============================================================================
@@ -629,6 +627,10 @@ def find_equipped_items(data_or_path) -> dict:
                 'offset': 0,
                 'value': item.get('value'),
                 'weight': item.get('weight'),
+                'level': item.get('level'),
+                'max_battery': item.get('max_battery'),
+                'current_durability': item.get('current_durability'),
+                'current_battery': item.get('current_battery'),
             }
             
             # Add weapon stats if applicable
@@ -640,6 +642,17 @@ def find_equipped_items(data_or_path) -> dict:
                     'ap_cost': weapon.get('ap_cost'),
                     'crit_chance': weapon.get('crit_chance'),
                     'crit_damage': weapon.get('crit_damage'),
+                    'speed': weapon.get('speed'),
+                    'on_hit_effects': weapon.get('on_hit_effects', 0),
+                }
+            
+            # Add armor stats if applicable
+            if item.get('armor'):
+                armor = item['armor']
+                gear_item['armor'] = {
+                    'damage_resistances': armor.get('damage_resistances', []),
+                    'evasion_penalty': armor.get('evasion_penalty', 0),
+                    'stealth_compatible': armor.get('stealth_compatible', False),
                 }
             
             equipped['character_gear'].append(gear_item)

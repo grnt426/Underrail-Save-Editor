@@ -235,6 +235,223 @@ ref_idx = data.find(ref_pattern)
 count = struct.unpack('<i', data[ref_idx - 4:ref_idx])[0]  # Count is 4-8 bytes before ref
 ```
 
+## Inventory Items
+
+### Item Storage Structure
+
+All inventory items use the same storage pattern as currency, with paths like:
+```
+category\itemname
+```
+
+### Common Item Categories
+| Category | Description | Examples |
+|----------|-------------|----------|
+| `currency` | Money | stygiancoin -> Stygian Coin, sgscredits -> SGS Credits |
+| `devices` | Tools and equipment | fishingrod -> Fishing Rod, lockpick -> Lockpick |
+| `weapons` | Weapons | throwingknife -> Throwing Knife, jackknife -> Jackknife |
+| `armor` | Armor and belts | waistpack -> Waist Pack |
+| `consumables` | Medicines | healthhypo -> Health Hypo, bandage -> Bandage |
+| `grenades` | Explosives | frag1 -> Frag Grenade, he2 -> HE Grenade Mk II |
+| `traps` | Traps | beartrap -> Bear Trap, fragmine1 -> Frag Mine |
+| `components` | Crafting materials | rubbersole -> Rubber Sole, plasmacore -> Plasma Core |
+| `expendables` | Ammo/power | fusioncell -> Fusion Cell, sclicell -> Supercharged Lithium Cell |
+
+### Item Entry Pattern
+Items are found with this pattern:
+```
+\x0a\x0a\x06 INDEX(2) \x00\x00 LENGTH PATH \x05 ID(2) \x00\x00
+```
+
+Full structure:
+- `\x0a\x0a\x06` - Item header marker (3 bytes)
+- `INDEX` - 2-byte little-endian item index
+- `\x00\x00` - Padding
+- `LENGTH` - 1 byte, length of path string
+- `PATH` - ASCII string (e.g., "traps\beartrap")
+- `\x05` - ID marker
+- `ID` - 2-byte little-endian item ID
+- `\x00\x00` - Padding
+
+### Item Count Pattern
+Item quantities use the same reference pattern as currency:
+1. Extract item ID from item entry
+2. Search for: `count(4 bytes) + \x09 + (ID-1)(2 bytes) + \x00\x00`
+3. Count is the 4-byte little-endian int before the `\x09`
+
+### Stacking
+Items with the same path can appear multiple times as separate stacks:
+- Throwing Knives might appear twice: 25 + 30 = 55 total
+- Same item type in different inventory slots
+
+### Item Container Types (LIDP/IIDP markers)
+Different inventory containers are identified by container markers:
+
+**LIDP containers (List Item Data Provider - Inventory items):**
+| Marker | Description |
+|--------|-------------|
+| `LIDP#G1>C00#` | Currency (Stygian Coins) |
+| `LIDP#G1>NEI#` | Currency (SGS Credits) |
+| `LIDP#G1>CI#` | Components (scraps, materials) |
+| `LIDP#G1>ABCI#` | Components (leather, animal parts) |
+| `LIDP#G1>ESI2#` | Expendables (energy sources) |
+| `LIDP#G1>EXI#` | Expendables (explosives) |
+| `LIDP#G1>GI#` | Grenades |
+| `LIDP#G1>MI#` | Medical items |
+| `LIDP#G1>QSI#` | Quick Slot Items (devices, ammo) |
+| `LIDP#G1>T5#` | Traps |
+| `LIDP#G1>TI#` | Tools (repair kits, devices) |
+| `LIDP#G1>WI#` | Weapons |
+| `LIDP#G1>BI1#` | Belt Items (belt armor in inventory) |
+
+**IIDP containers (Instance Item Data Provider - Equipped/assigned items):**
+| Marker | Description |
+|--------|-------------|
+| `IIDP#G1>HI#` | Hotbar Items (assigned to hotbar slots) |
+| `IIDP#G1>TI#` | Trap Items (assigned to utility belt) |
+| `IIDP#G1>BI#` | Belt Items (assigned to utility belt) |
+
+**CGS marker (Character Gear Slot - Equipped equipment):**
+Items with `CGS` marker and `DEI:DT:A` context are equipped on the character:
+- Armor (body armor, boots, helmet, etc.)
+- Belt (waist pack, utility belt)
+- Weapons (main hand, off hand)
+- Utility slot items (grenades, tools assigned to belt slots)
+
+### Detection Code
+```python
+ITEM_HEADER = b'\x0a\x0a\x06'
+
+def find_inventory_items(data: bytes) -> list:
+    items = []
+    idx = 0
+    while True:
+        idx = data.find(ITEM_HEADER, idx)
+        if idx == -1:
+            break
+        
+        item_index = struct.unpack('<H', data[idx+3:idx+5])[0]
+        path_length = data[idx + 7]
+        path = data[idx + 8:idx + 8 + path_length].decode('ascii')
+        
+        if '\\' in path:  # Valid item path
+            id_offset = idx + 8 + path_length + 1
+            item_id = struct.unpack('<H', data[id_offset:id_offset+2])[0]
+            count = find_item_count(data, item_id)
+            items.append({'path': path, 'id': item_id, 'count': count})
+        
+        idx += 1
+    return items
+```
+
+## Item Display Names
+
+### Source: Game .item Files
+
+Display names are extracted from the game's `.item` files located at:
+```
+<game_install>/data/rules/items/**/*.item
+```
+
+These files use the same packed format as save files (24-byte header + gzip).
+
+### .item File Structure
+
+Each `.item` file contains:
+- Internal name (camelCase or lowercase): `throwingKnife`, `beartrap`
+- Display name (with spaces, proper capitalization): `Throwing Knife`, `Bear Trap`
+- Description text
+
+### Implementation
+
+The `use/item_names.py` module contains `ITEM_DISPLAY_NAMES` dictionary mapping:
+```python
+ITEM_DISPLAY_NAMES = {
+    'throwingknife': 'Throwing Knife',
+    'beartrap': 'Bear Trap',
+    'fusioncell': 'Fusion Cell',
+    'sclicell': 'Supercharged Lithium Cell',
+    # ... 200+ mappings from game files
+}
+```
+
+### Lookup Function
+```python
+from use.item_names import get_display_name
+
+name = get_display_name('throwingknife')  # Returns 'Throwing Knife'
+name = get_display_name('unknown')        # Returns None
+```
+
+### Fallback Pattern
+
+For items not in the mapping, `_extract_item_display_name()` in `core.py` uses pattern-based conversion:
+1. Replace underscores with spaces
+2. Insert spaces before uppercase letters (camelCase)
+3. Insert space before trailing numbers
+4. Capitalize words, with acronyms (EMP, HE, SMG, etc.) staying uppercase
+
+### Key Corrections from Game Files
+
+| Internal Name | Actual Display Name | Notes |
+|--------------|---------------------|-------|
+| `waistpack` | Waist Pack | Different from "Utility Belt" (separate item) |
+| `utilitybelt` | Utility Belt | Different from "Waist Pack" (both exist) |
+| `barrel5` | 5mm Firearm Barrel | Not "5mm Barrel" - per wiki/game |
+| `omnitool` | Omni-Tool | Hyphenated per game files |
+| `sclicell` | Supercharged Lithium Cell | |
+| `fusioncell` | Fusion Cell | |
+| `emfieldstabilizer` | Electromagnetic Field Stabilizer | |
+| `animalheart` | Healthy Animal Heart | |
+| `frag1` | Frag Grenade | Not "Frag 1" |
+| `emp1` | EMP Grenade | |
+| `he1` | HE Grenade | |
+
+**Verified against**: [Underrail Wiki - Items](https://www.stygiansoftware.com/wiki/index.php?title=Items)
+
+## Item Definition Files (.k)
+
+The game's knowledge files are stored as `.k` files in:
+```
+<game_install>/data/knowledge/*.k
+```
+
+### File Format
+
+Same format as save files:
+- 24-byte header (16-byte GUID + 8-byte version)
+- gzip-compressed data
+
+### Content Structure
+
+Contains item descriptions (not display names):
+```
+KI:S:Count -> number of entries
+KI:S:N:Key -> internal item name (e.g., "psibooster")
+KI:S:N:Value -> item description (e.g., "Immediately restores {0} psi.")
+```
+
+Note: Display names come from `.item` files, not `.k` files.
+
+### Known Exceptions
+
+Some items have display names that differ from the pattern:
+- `waistpack` → "Utility Belt" (not "Waist Pack")
+- `fusioncell` → Unknown (might be "Plasma Cell" in-game)
+- `sclicell` → Unknown (Small Caliber Li Cell?)
+
+### Available Definition Files
+
+Located in `items/` directory:
+- `ammo.k` - Ammunition types
+- `armors.k` - Armor items
+- `consumables.k` - Medical items, boosters
+- `food.k` - Food items
+- `grenades.k` - (in mods.k) Grenade types
+- `repairkits.k` - Repair kit types
+- `utilities.k` - Tools and utility items
+- `weapons.k` - Weapon types
+
 ## Derived Stats
 
 Derived stats (Health, AP, MP, Fortitude, Resolve, etc.) are calculated from base attributes and feats. Their storage location is less predictable than skills/attributes. Key derived stats:
@@ -298,17 +515,29 @@ Core module with all shared save file processing functions:
 - `find_currency(data)` - find currency counts
 - `find_feats(data, skills)` - find character feats
 - `detect_dlc(data, skill_count)` - detect installed DLC
+- `find_inventory_items(data)` - find all inventory items with counts
+- `get_inventory_summary(data)` - get grouped/merged inventory summary
+- `find_equipped_items(data)` - find equipped items (character gear, utility slots, hotbar)
+- `get_equipment_summary(data)` - get equipment summary with categories
+- `_extract_item_display_name(path)` - convert internal name to display name
+
+### use/item_names.py
+Item display name mappings extracted from game `.item` files:
+- `ITEM_DISPLAY_NAMES` - dictionary of internal_name -> display_name (200+ entries)
+- `get_display_name(internal_name)` - lookup display name (returns None if not found)
+- `has_display_name(internal_name)` - check if mapping exists
 
 ### use/viewer.py
 Read-only viewer module. Displays character name, game version, DLC detection,
-XP, currency, base attributes, skills (grouped by category), and feats.
+XP, currency, base attributes, skills (grouped by category), feats, and inventory
+(items grouped by category with stack counts).
 
 ### use/editor.py
 Interactive editor module. Allows editing base attributes and skill point allocations.
 Creates backups before saving.
 
 ### use/main_screen.py
-Console menu interface. Provides commands: view, edit, help, quit.
+Console menu interface. Provides commands: load, unload, view, equip/equipped, edit, help, quit.
 
 ### Running the Application
 
@@ -335,6 +564,23 @@ python -m use.main_screen
 | 10 | 1 | 1,636 | 32 | 480 |
 | 11 | 1 | 2,682 | 862 | 1,540 (edited) |
 
+**Inventory (Level 10, selected items):**
+
+| Item | Count | Notes |
+|------|-------|-------|
+| Throwing Knife | 55 (25+30) | Two stacks in inventory |
+| Bear Trap | 14 | Single stack |
+| Fishing Rod | 1 | |
+| Rubber Sole | 1 | |
+| Plasma Core | 2 (1+1) | Two separate items |
+| Waist Pack | 1 | Internal: armor\waistPack |
+| Health Hypo | 13 | |
+| Bandage | 19 | |
+| Lockpick | 39 | |
+| Metal Scraps | 20 | |
+| Electronic Scraps | 19 | |
+| Fabric Scraps | 21 | |
+
 **Base Attributes (Level 10):**
 
 | Attribute | Base | Effective |
@@ -355,6 +601,20 @@ python -m use.main_screen
 - Lightning Punches
 - Parry
 - Deflection
+
+**Equipped Items (Level 10):**
+
+| Slot Type | Item | Category |
+|-----------|------|----------|
+| Character Gear | Waist Pack | Armor (belt) |
+| Character Gear | Frag Grenade Mk II | Grenades (utility) |
+| Character Gear | Molotov Cocktail | Grenades (utility) |
+| Character Gear | Jackknife | Weapons |
+| Utility Slots | Bear Trap | Traps |
+| Utility Slots | Burrower Poison Bear Trap | Traps |
+| Utility Slots | Midazolam | Components |
+| Hotbar | Lockpick Mk III | Devices |
+| Hotbar | Hotwiring Kit | Devices |
 
 ### Character "Granite", Level 1 (originally pre-DLC, converted)
 

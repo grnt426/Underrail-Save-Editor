@@ -214,14 +214,76 @@ def run_equipment(args=None):
         print("-" * 40)
         for item in equipment['character_gear']:
             print(f"  {item['name']:<30} [{item['category']}]")
-            # Show stats on second line for crafted items
-            stats = []
+            
+            # Weapon stats
+            weapon = item.get('weapon')
+            if weapon:
+                dmg_min = weapon.get('damage_min')
+                dmg_max = weapon.get('damage_max')
+                ap = weapon.get('ap_cost')
+                crit = weapon.get('crit_chance')
+                crit_dmg = weapon.get('crit_damage')
+                speed = weapon.get('speed')
+                
+                weapon_stats = []
+                if dmg_min is not None and dmg_max is not None:
+                    weapon_stats.append(f"Damage: {dmg_min}-{dmg_max}")
+                if ap is not None:
+                    weapon_stats.append(f"AP: {ap}")
+                if crit is not None:
+                    weapon_stats.append(f"Crit: {crit*100:.0f}%")
+                if crit_dmg is not None and crit_dmg != 1.0:
+                    bonus = (crit_dmg - 1) * 100
+                    sign = "+" if bonus >= 0 else ""
+                    weapon_stats.append(f"Crit Dmg: {sign}{bonus:.0f}%")
+                if speed is not None:
+                    weapon_stats.append(f"Speed: {speed:.2f}")
+                if weapon_stats:
+                    print(f"    {', '.join(weapon_stats)}")
+            
+            # Armor stats
+            armor = item.get('armor')
+            if armor:
+                armor_stats = []
+                for dr in armor.get('damage_resistances', []):
+                    val = dr.get('value', 0)
+                    res = dr.get('resistance', 0)
+                    if val > 0 or res > 0:
+                        armor_stats.append(f"DR: {val} ({res*100:.0f}%)")
+                evasion = armor.get('evasion_penalty', 0)
+                if evasion > 0:
+                    armor_stats.append(f"Evasion: -{evasion*100:.0f}%")
+                if armor.get('stealth_compatible'):
+                    armor_stats.append("Stealth OK")
+                if armor_stats:
+                    print(f"    {', '.join(armor_stats)}")
+            
+            # Durability and energy
+            dur = item.get('current_durability')
+            bat = item.get('current_battery')
+            max_bat = item.get('max_battery')
+            
+            runtime_stats = []
+            if dur is not None and dur > 0:
+                runtime_stats.append(f"Durability: {dur:.0f}")
+            if bat is not None and bat > 0:
+                if max_bat:
+                    runtime_stats.append(f"Energy: {bat:.0f}/{max_bat}")
+                else:
+                    runtime_stats.append(f"Energy: {bat:.0f}")
+            if runtime_stats:
+                print(f"    {', '.join(runtime_stats)}")
+            
+            # Basic stats (value, weight, level)
+            basic_stats = []
+            if item.get('level') is not None:
+                basic_stats.append(f"Lvl: {item['level']}")
             if item.get('value') is not None:
-                stats.append(f"Value: {item['value']:,.0f}")
+                basic_stats.append(f"Value: {item['value']:,.0f}")
             if item.get('weight') is not None:
-                stats.append(f"Weight: {item['weight']:.1f}")
-            if stats:
-                print(f"    {', '.join(stats)}")
+                basic_stats.append(f"Weight: {item['weight']:.1f}")
+            if basic_stats:
+                print(f"    {', '.join(basic_stats)}")
         print()
     
     # Utility slots (belt slots for grenades, tools, etc.)

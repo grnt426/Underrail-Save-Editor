@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 Unit tests for USE (Underrail Save Editor) core functions.
+
+These tests verify the UFE-based parser and core functionality.
 """
 
 import unittest
-import struct
 import sys
 from pathlib import Path
 
@@ -12,80 +13,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from use.core import (
-    is_packed,
-    unpack_data,
-    pack_data,
-    get_skill_entries,
     get_skill_names,
-    get_stat_entries,
-    write_skill_value,
-    write_stat_value,
-    find_xp_current,
-    find_currency,
-    find_game_version,
-    find_character_name,
-    detect_dlc,
-    detect_xp_system,
     calculate_xp_needed,
-    PACKED_HEADER,
+    _extract_item_display_name,
     SKILL_NAMES_BASE,
     SKILL_NAMES_DLC,
     STAT_NAMES,
-    ESI_PATTERN,
-    SKILL_PATTERN,
-    XP_PATTERN,
-    VERSION_MARKER,
-    CURRENCY_PATHS,
     FEAT_DISPLAY_NAMES,
+    ITEM_CATEGORIES,
 )
-
-
-class TestPackedDetection(unittest.TestCase):
-    """Tests for is_packed() function."""
-    
-    def test_packed_header_detected(self):
-        """Packed files should be detected by GUID header."""
-        # Construct minimal packed data (header + version + gzip)
-        fake_packed = PACKED_HEADER + bytes(8) + bytes(100)
-        self.assertTrue(is_packed(fake_packed))
-    
-    def test_unpacked_data_not_detected(self):
-        """Unpacked data should not be detected as packed."""
-        unpacked = b'eSKC\x02\x00\x00\x00' + bytes(100)
-        self.assertFalse(is_packed(unpacked))
-    
-    def test_empty_data(self):
-        """Empty data should not be detected as packed."""
-        self.assertFalse(is_packed(b''))
-    
-    def test_short_data(self):
-        """Data shorter than header should not be detected as packed."""
-        self.assertFalse(is_packed(PACKED_HEADER[:8]))
-
-
-class TestPackUnpack(unittest.TestCase):
-    """Tests for pack_data() and unpack_data() functions."""
-    
-    def test_round_trip(self):
-        """Data should survive pack/unpack round trip."""
-        original = b'Test data with some bytes: \x00\x01\x02\xff'
-        packed = pack_data(original)
-        unpacked = unpack_data(packed)
-        self.assertEqual(original, unpacked)
-    
-    def test_packed_has_header(self):
-        """Packed data should start with GUID header."""
-        original = b'Some test data'
-        packed = pack_data(original)
-        self.assertTrue(packed.startswith(PACKED_HEADER))
-    
-    def test_packed_is_compressed(self):
-        """Packed data should be smaller than original for compressible data."""
-        # Create highly compressible data
-        original = b'A' * 10000
-        packed = pack_data(original)
-        # Packed includes 24-byte header, so compare content sizes
-        self.assertLess(len(packed), len(original))
 
 
 class TestSkillNameLists(unittest.TestCase):
@@ -121,26 +57,6 @@ class TestSkillNameLists(unittest.TestCase):
         self.assertEqual(SKILL_NAMES_DLC[20], "Temporal Manipulation")
 
 
-class TestSkillValueOperations(unittest.TestCase):
-    """Tests for read and write skill value functions."""
-    
-    def test_write_skill_value_base_only(self):
-        """write_skill_value should write base value correctly."""
-        data = bytearray(20)
-        write_skill_value(data, 4, 55)
-        value = struct.unpack('<i', data[4:8])[0]
-        self.assertEqual(value, 55)
-    
-    def test_write_skill_value_with_mod(self):
-        """write_skill_value should write both base and mod values."""
-        data = bytearray(20)
-        write_skill_value(data, 4, 55, 83)
-        base = struct.unpack('<i', data[4:8])[0]
-        mod = struct.unpack('<i', data[8:12])[0]
-        self.assertEqual(base, 55)
-        self.assertEqual(mod, 83)
-
-
 class TestBaseStatOperations(unittest.TestCase):
     """Tests for base stat (attribute) functions."""
     
@@ -154,104 +70,6 @@ class TestBaseStatOperations(unittest.TestCase):
         self.assertEqual(STAT_NAMES[1], 'Dexterity')
         self.assertEqual(STAT_NAMES[2], 'Agility')
         self.assertEqual(STAT_NAMES[6], 'Intelligence')
-    
-    def test_write_stat_value_base_only(self):
-        """write_stat_value should write base value correctly."""
-        data = bytearray(20)
-        write_stat_value(data, 4, 8)
-        value = struct.unpack('<i', data[4:8])[0]
-        self.assertEqual(value, 8)
-    
-    def test_write_stat_value_with_effective(self):
-        """write_stat_value should write both base and effective values."""
-        data = bytearray(20)
-        write_stat_value(data, 4, 8, 10)
-        base = struct.unpack('<i', data[4:8])[0]
-        effective = struct.unpack('<i', data[8:12])[0]
-        self.assertEqual(base, 8)
-        self.assertEqual(effective, 10)
-    
-    def test_get_stat_entries_synthetic(self):
-        """get_stat_entries should find synthetic stat patterns."""
-        # Build a synthetic stat entry using ESI pattern
-        type_id = struct.pack('<I', 1115)  # Variable type ID
-        base_val = struct.pack('<i', 8)
-        eff_val = struct.pack('<i', 9)
-        
-        data = bytes(100) + ESI_PATTERN + type_id + base_val + eff_val + bytes(100)
-        
-        stats = get_stat_entries(data)
-        
-        self.assertEqual(len(stats), 1)
-        self.assertEqual(stats[0]['base'], 8)
-        self.assertEqual(stats[0]['effective'], 9)
-    
-    def test_get_stat_entries_filters_invalid(self):
-        """get_stat_entries should filter out unreasonable values."""
-        type_id = struct.pack('<I', 1115)
-        
-        # Create entry with invalid value (too high for a stat)
-        invalid_base = struct.pack('<i', 50)  # > 30 max
-        invalid_eff = struct.pack('<i', 60)   # > 50 max
-        
-        data = bytes(50) + ESI_PATTERN + type_id + invalid_base + invalid_eff + bytes(50)
-        
-        stats = get_stat_entries(data)
-        
-        # Should find 0 stats due to filtering
-        self.assertEqual(len(stats), 0)
-
-
-class TestSkillPatternParsing(unittest.TestCase):
-    """Tests for skill pattern detection."""
-    
-    def test_pattern_detection_synthetic(self):
-        """get_skill_entries should find synthetic skill patterns."""
-        # Build a synthetic skill entry
-        type_id = struct.pack('<I', 1116)  # Variable type ID
-        base_val = struct.pack('<i', 55)
-        mod_val = struct.pack('<i', 83)
-        
-        data = bytes(100) + SKILL_PATTERN + type_id + base_val + mod_val + bytes(100)
-        
-        skills = get_skill_entries(data)
-        
-        self.assertEqual(len(skills), 1)
-        self.assertEqual(skills[0]['base'], 55)
-        self.assertEqual(skills[0]['mod'], 83)
-    
-    def test_pattern_filters_invalid_values(self):
-        """get_skill_entries should filter out unreasonable values."""
-        type_id = struct.pack('<I', 1116)
-        
-        # Create entries with invalid values (too high)
-        invalid_base = struct.pack('<i', 500)  # > 300 max
-        invalid_mod = struct.pack('<i', 100)
-        
-        data = bytes(50) + SKILL_PATTERN + type_id + invalid_base + invalid_mod + bytes(50)
-        
-        skills = get_skill_entries(data)
-        
-        # Should find 0 skills due to filtering
-        self.assertEqual(len(skills), 0)
-    
-    def test_multiple_skills_detected(self):
-        """get_skill_entries should find multiple skill entries."""
-        type_id = struct.pack('<I', 1116)
-        
-        # Create 3 valid skill entries
-        skill1 = SKILL_PATTERN + type_id + struct.pack('<ii', 10, 15)
-        skill2 = SKILL_PATTERN + type_id + struct.pack('<ii', 20, 30)
-        skill3 = SKILL_PATTERN + type_id + struct.pack('<ii', 30, 45)
-        
-        data = bytes(50) + skill1 + bytes(20) + skill2 + bytes(20) + skill3 + bytes(50)
-        
-        skills = get_skill_entries(data)
-        
-        self.assertEqual(len(skills), 3)
-        self.assertEqual(skills[0]['base'], 10)
-        self.assertEqual(skills[1]['base'], 20)
-        self.assertEqual(skills[2]['base'], 30)
 
 
 class TestXPCalculation(unittest.TestCase):
@@ -294,264 +112,6 @@ class TestXPCalculation(unittest.TestCase):
         """Classic: XP needed scales linearly with level * 1000."""
         self.assertEqual(calculate_xp_needed(20, 'classic'), 20000)
         self.assertEqual(calculate_xp_needed(25, 'classic'), 25000)
-    
-    def test_find_xp_synthetic(self):
-        """find_xp_current should extract XP from pattern."""
-        # Build synthetic XP data
-        xp_value = struct.pack('<i', 42)
-        data = bytes(100) + XP_PATTERN + xp_value + bytes(100)
-        
-        result = find_xp_current(data)
-        self.assertEqual(result, 42)
-    
-    def test_find_xp_zero(self):
-        """find_xp_current should handle zero XP."""
-        xp_value = struct.pack('<i', 0)
-        data = bytes(100) + XP_PATTERN + xp_value + bytes(100)
-        
-        result = find_xp_current(data)
-        self.assertEqual(result, 0)
-    
-    def test_find_xp_invalid_too_high(self):
-        """find_xp_current should reject unreasonably high values."""
-        # Value > 10 million should be rejected
-        xp_value = struct.pack('<i', 20000000)
-        data = bytes(100) + XP_PATTERN + xp_value + bytes(100)
-        
-        result = find_xp_current(data)
-        self.assertIsNone(result)
-    
-    def test_find_xp_not_found(self):
-        """find_xp_current should return None if pattern not found."""
-        data = bytes(1000)  # No XP pattern
-        
-        result = find_xp_current(data)
-        self.assertIsNone(result)
-
-
-class TestCurrencyDetection(unittest.TestCase):
-    """Tests for currency detection functions."""
-    
-    def test_currency_paths_defined(self):
-        """Currency paths should be defined for coins and credits."""
-        self.assertIn('stygian_coins', CURRENCY_PATHS)
-        self.assertIn('sgs_credits', CURRENCY_PATHS)
-    
-    def test_find_currency_not_found(self):
-        """find_currency should return None for missing currencies."""
-        data = bytes(1000)  # No currency data
-        
-        result = find_currency(data)
-        
-        self.assertIsNone(result.get('stygian_coins'))
-        self.assertIsNone(result.get('sgs_credits'))
-    
-    def test_find_currency_returns_dict(self):
-        """find_currency should always return a dictionary."""
-        data = bytes(100)
-        
-        result = find_currency(data)
-        
-        self.assertIsInstance(result, dict)
-
-
-class TestGameVersionDetection(unittest.TestCase):
-    """Tests for game version detection."""
-    
-    def test_find_version_synthetic(self):
-        """find_game_version should extract version from pattern."""
-        # Build synthetic version data
-        # Marker + 4 null bytes (field terminator) + 4 type bytes + 4 int32 values
-        version_data = (
-            VERSION_MARKER +
-            b'\x00\x00\x00\x00' +  # Field nulls
-            b'\x00\x00\x00\x00' +  # Type bytes
-            struct.pack('<i', 1) +   # Major
-            struct.pack('<i', 3) +   # Minor
-            struct.pack('<i', 0) +   # Build
-            struct.pack('<i', 17)    # Revision
-        )
-        data = bytes(100) + version_data + bytes(100)
-        
-        result = find_game_version(data)
-        
-        self.assertEqual(result, (1, 3, 0, 17))
-    
-    def test_find_version_not_found(self):
-        """find_game_version should return None if pattern not found."""
-        data = bytes(1000)
-        
-        result = find_game_version(data)
-        
-        self.assertIsNone(result)
-    
-    def test_find_version_filters_invalid(self):
-        """find_game_version should reject unreasonable values."""
-        # Create version with invalid major version (> 10)
-        version_data = (
-            VERSION_MARKER +
-            b'\x00\x00\x00\x00' +
-            b'\x00\x00\x00\x00' +
-            struct.pack('<i', 99) +   # Major too high
-            struct.pack('<i', 3) +
-            struct.pack('<i', 0) +
-            struct.pack('<i', 17)
-        )
-        data = bytes(100) + version_data + bytes(100)
-        
-        result = find_game_version(data)
-        
-        self.assertIsNone(result)
-
-
-class TestCharacterNameDetection(unittest.TestCase):
-    """Tests for character name detection."""
-    
-    def test_find_name_synthetic(self):
-        """find_character_name should extract name from pattern."""
-        # Build synthetic name data
-        # \x06 + any byte + XX + \x00\x00 + length + name + sentinel "eG"
-        name = b'TestChar'
-        name_data = (
-            b'\x06' +           # Pattern start
-            b'\x99' +           # Variable byte
-            b'\x04\x00\x00' +   # XX + nulls
-            bytes([len(name)]) +  # Length
-            name +              # Name
-            b'\x00' * 5 +       # Padding
-            b'eG'               # Sentinel
-        )
-        data = bytes(100) + name_data + bytes(100)
-        
-        result = find_character_name(data)
-        
-        self.assertEqual(result, 'TestChar')
-    
-    def test_find_name_with_spaces(self):
-        """find_character_name should handle names with spaces."""
-        name = b'Test Character'
-        name_data = (
-            b'\x06\x99\x04\x00\x00' +
-            bytes([len(name)]) +
-            name +
-            b'\x00' * 5 +
-            b'eG'
-        )
-        data = bytes(100) + name_data + bytes(100)
-        
-        result = find_character_name(data)
-        
-        self.assertEqual(result, 'Test Character')
-    
-    def test_find_name_not_found(self):
-        """find_character_name should return None if not found."""
-        data = bytes(1000)
-        
-        result = find_character_name(data)
-        
-        self.assertIsNone(result)
-    
-    def test_find_name_filters_short_names(self):
-        """find_character_name should reject names shorter than 3 chars."""
-        name = b'AB'  # Too short
-        name_data = (
-            b'\x06\x99\x04\x00\x00' +
-            bytes([len(name)]) +
-            name +
-            b'\x00' * 5 +
-            b'eG'
-        )
-        data = bytes(100) + name_data + bytes(100)
-        
-        result = find_character_name(data)
-        
-        self.assertIsNone(result)
-
-
-class TestDLCDetection(unittest.TestCase):
-    """Tests for DLC detection."""
-    
-    def test_expedition_detected_by_skill_count(self):
-        """Expedition DLC should be detected with 24+ skills."""
-        data = bytes(100)
-        
-        result = detect_dlc(data, 24)
-        
-        self.assertTrue(result['expedition'])
-    
-    def test_expedition_not_detected_with_23_skills(self):
-        """Base game (23 skills) should not flag Expedition."""
-        data = bytes(100)
-        
-        result = detect_dlc(data, 23)
-        
-        self.assertFalse(result['expedition'])
-    
-    def test_expedition_detected_by_content_marker(self):
-        """Expedition DLC should be detected by content markers."""
-        data = b'some data xpbl_jetski more data'
-        
-        result = detect_dlc(data, 23)
-        
-        self.assertTrue(result['expedition'])
-    
-    def test_expedition_detected_by_expedition_marker(self):
-        """Expedition DLC should be detected by expedition_ marker."""
-        data = b'some data expedition_quest more data'
-        
-        result = detect_dlc(data, 23)
-        
-        self.assertTrue(result['expedition'])
-
-
-class TestXPSystemDetection(unittest.TestCase):
-    """Tests for XP system detection."""
-    
-    def test_oddity_detected_with_studied_oddities(self):
-        """Oddity XP should be detected when studied oddities are present."""
-        data = b'some data Oddity.PsiBeetleBrain more data'
-        
-        system, certain = detect_xp_system(data)
-        
-        self.assertEqual(system, 'oddity')
-        self.assertTrue(certain)
-    
-    def test_multiple_oddities_detected(self):
-        """Oddity XP should be detected with multiple oddity entries."""
-        data = b'Oddity.ChewToy Oddity.OmegaIdCard Oddity.StrangeCommDevice'
-        
-        system, certain = detect_xp_system(data)
-        
-        self.assertEqual(system, 'oddity')
-        self.assertTrue(certain)
-    
-    def test_no_oddities_returns_classic_uncertain(self):
-        """Without studied oddities, returns classic but uncertain."""
-        data = b'some save data without oddity entries'
-        
-        system, certain = detect_xp_system(data)
-        
-        self.assertEqual(system, 'classic')
-        self.assertFalse(certain)
-    
-    def test_empty_data_returns_classic_uncertain(self):
-        """Empty data returns classic but uncertain."""
-        data = bytes(100)
-        
-        system, certain = detect_xp_system(data)
-        
-        self.assertEqual(system, 'classic')
-        self.assertFalse(certain)
-    
-    def test_oddity_substring_not_matched(self):
-        """'Oddity' without dot should not trigger detection."""
-        # The word "Oddity" alone (without the dot) might appear in other contexts
-        data = b'OddityXP or just Oddity text'
-        
-        system, certain = detect_xp_system(data)
-        
-        self.assertEqual(system, 'classic')
-        self.assertFalse(certain)
 
 
 class TestFeatDisplayNames(unittest.TestCase):
@@ -569,6 +129,58 @@ class TestFeatDisplayNames(unittest.TestCase):
         """Multi-word feats should have proper display names."""
         self.assertEqual(FEAT_DISPLAY_NAMES.get('heavypunch'), 'Heavy Punch')
         self.assertEqual(FEAT_DISPLAY_NAMES.get('lightningpunches'), 'Lightning Punches')
+
+
+class TestInventoryItemDisplayNames(unittest.TestCase):
+    """Tests for item display name conversion."""
+    
+    def test_special_names_mapped(self):
+        """Special item names should be mapped correctly from game files."""
+        self.assertEqual(_extract_item_display_name('devices\\fishingrod'), 'Fishing Rod')
+        self.assertEqual(_extract_item_display_name('traps\\beartrap'), 'Bear Trap')
+        self.assertEqual(_extract_item_display_name('armor\\waistpack'), 'Waist Pack')
+    
+    def test_camelcase_conversion(self):
+        """CamelCase names should be converted to Title Case with spaces."""
+        self.assertEqual(_extract_item_display_name('components\\MetalScraps'), 'Metal Scraps')
+    
+    def test_case_insensitive_special_names(self):
+        """Special names should be case insensitive."""
+        self.assertEqual(_extract_item_display_name('Devices\\FishingRod'), 'Fishing Rod')
+        self.assertEqual(_extract_item_display_name('TRAPS\\BEARTRAP'), 'Bear Trap')
+    
+    def test_currency_names(self):
+        """Currency names should be properly formatted."""
+        self.assertEqual(_extract_item_display_name('currency\\stygiancoin'), 'Stygian Coin')
+        self.assertEqual(_extract_item_display_name('currency\\sgscredits'), 'SGS Credits')
+    
+    def test_ammo_names(self):
+        """Ammo names should be properly formatted."""
+        self.assertEqual(_extract_item_display_name('Ammo\\caliber_5_std'), 'Caliber 5 Std')
+        self.assertEqual(_extract_item_display_name('Ammo\\bolt'), 'Bolt')
+
+
+class TestInventoryCategories(unittest.TestCase):
+    """Tests for item category mapping."""
+    
+    def test_common_categories_defined(self):
+        """Common item categories should be defined."""
+        self.assertIn('devices', ITEM_CATEGORIES)
+        self.assertIn('weapons', ITEM_CATEGORIES)
+        self.assertIn('consumables', ITEM_CATEGORIES)
+        self.assertIn('grenades', ITEM_CATEGORIES)
+        self.assertIn('traps', ITEM_CATEGORIES)
+    
+    def test_case_variations_mapped(self):
+        """Category names should handle case variations."""
+        self.assertEqual(ITEM_CATEGORIES.get('devices'), 'Devices')
+        self.assertEqual(ITEM_CATEGORIES.get('Devices'), 'Devices')
+        self.assertEqual(ITEM_CATEGORIES.get('weapons'), 'Weapons')
+        self.assertEqual(ITEM_CATEGORIES.get('Weapons'), 'Weapons')
+    
+    def test_plot_category_mapped(self):
+        """Plot items should map to Quest Items."""
+        self.assertEqual(ITEM_CATEGORIES.get('plot'), 'Quest Items')
 
 
 if __name__ == '__main__':

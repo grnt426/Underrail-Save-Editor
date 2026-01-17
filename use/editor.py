@@ -3,23 +3,16 @@
 Underrail Save File Editor
 
 Edits skill point allocations and base stats in Underrail save files.
+Uses UFE (Underrail File Exporter) for JSON-based editing.
 """
 
-import struct
 import sys
 from pathlib import Path
 
+from .ufe_parser import SaveEditor, UFEError
 from .core import (
-    is_packed,
-    unpack_data,
-    pack_data,
     find_save_file,
-    find_character_level,
-    get_stat_entries,
-    get_skill_entries,
     get_skill_names,
-    write_skill_value,
-    write_stat_value,
     calculate_max_skill_per_level,
     calculate_total_skill_points,
     STAT_NAMES,
@@ -37,41 +30,43 @@ def main(args=None):
     ignore_warnings = False
     first_warning = True
     
-    # Resolve save file path from args (handles directories, files, mixed slashes)
+    # Resolve save file path from args
     path_arg = args[0] if args and len(args) > 0 else None
-    input_file, is_packed_file, data = find_save_file(path_arg)
+    input_file = find_save_file(path_arg)
     
-    if input_file is None or data is None:
+    if input_file is None:
         print("ERROR: No save file found!")
         if path_arg:
             print(f"Path: {path_arg}")
-        print("Expected 'global.dat' or 'global/global' in the specified location.")
+        print("Expected 'global.dat' in the specified location.")
         sys.exit(1)
     
-    if is_packed_file:
-        print(f"Found packed file: '{input_file}'")
-    else:
-        print(f"Found unpacked file: '{input_file}'")
+    print(f"Found save file: '{input_file}'")
+    print()
     
-    # Unpack if needed
-    if is_packed_file:
-        print("Unpacking save file...")
-        try:
-            data = unpack_data(data)
-            print(f"Unpacked successfully ({len(data)} bytes)")
-        except Exception as e:
-            print(f"ERROR: Failed to unpack: {e}")
-            sys.exit(1)
-    else:
-        print(f"File is already unpacked ({len(data)} bytes)")
+    # Initialize the UFE-based editor
+    print("Loading save file with UFE...")
+    try:
+        editor = SaveEditor(input_file)
+        save_data = editor.get_save_data()
+        print("Save file loaded successfully.")
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+    except UFEError as e:
+        print(f"ERROR: Failed to parse save file: {e}")
+        sys.exit(1)
     
     print()
     
-    # Try to auto-detect character level from info.dat
-    char_level = find_character_level(input_file)
+    # Get character info
+    char_name = save_data.get_character_name()
+    char_level = save_data.get_character_level()
     
-    if char_level is not None and 1 <= char_level <= 30:
-        print(f"Auto-detected level: {char_level}")
+    if char_name:
+        print(f"Character: {char_name}")
+    if char_level and 1 <= char_level <= 30:
+        print(f"Level: {char_level}")
     else:
         # Ask user for level
         print("Enter your character level (needed to calculate max skill values):")
@@ -93,19 +88,20 @@ def main(args=None):
     print(f"  - Total available skill points: {total_skill_points}")
     print()
     
-    # Find all skills
-    print("Scanning for skill data...")
-    skill_entries = get_skill_entries(data)
+    # Get current skills
+    print("Loading skill data...")
+    skills = save_data.get_skills()
     
-    if not skill_entries:
+    if not skills:
         print("ERROR: Could not find skill data in save file!")
+        editor.cleanup()
         sys.exit(1)
     
-    print(f"Found {len(skill_entries)} skill entries")
+    print(f"Found {len(skills)} skills")
     
     # Detect DLC based on skill count
-    skill_names = get_skill_names(len(skill_entries))
-    has_dlc = len(skill_entries) >= 24
+    skill_names = get_skill_names(len(skills))
+    has_dlc = len(skills) >= 24
     if has_dlc:
         print("  (Expedition DLC detected - Temporal Manipulation skill present)")
     print()
@@ -117,30 +113,29 @@ def main(args=None):
     print(f"{'#':<3} {'Skill Name':<22} {'Base':>6} {'Effective':>10}")
     print("-" * 60)
     
-    for i, entry in enumerate(skill_entries):
+    for i, skill in enumerate(skills):
         name = skill_names[i] if i < len(skill_names) else f"Unknown_{i}"
-        print(f"{i+1:<3} {name:<22} {entry['base']:>6} {entry['mod']:>10}")
+        print(f"{i+1:<3} {name:<22} {skill['base']:>6} {skill['effective']:>10}")
     
     print()
     
-    # Convert to bytearray for editing
-    data = bytearray(data)
-    changes_made = []
-    stat_changes_made = []
+    # Track changes for summary
+    skill_changes = []
+    stat_changes = []
     
-    # Find and display base stats
+    # Get and display base attributes
     print("=" * 60)
     print("Current Base Attributes")
     print("=" * 60)
     
-    stat_entries = get_stat_entries(data)
+    attributes = save_data.get_base_attributes()
     
-    if stat_entries:
+    if attributes:
         print(f"{'#':<3} {'Attribute':<15} {'Base':>6} {'Effective':>10}")
         print("-" * 40)
-        for i, entry in enumerate(stat_entries):
-            name = STAT_NAMES[i] if i < len(STAT_NAMES) else f"Unknown_{i}"
-            print(f"{i+1:<3} {name:<15} {entry['base']:>6} {entry['effective']:>10}")
+        for i, attr in enumerate(attributes):
+            name = attr.get('name', STAT_NAMES[i] if i < len(STAT_NAMES) else f"Unknown_{i}")
+            print(f"{i+1:<3} {name:<15} {attr['base']:>6} {attr['effective']:>10}")
         print()
         
         # Edit base stats
@@ -151,10 +146,10 @@ def main(args=None):
         print("Valid range: 1 to 99")
         print()
         
-        for i, entry in enumerate(stat_entries):
-            name = STAT_NAMES[i] if i < len(STAT_NAMES) else f"Unknown_{i}"
-            current_base = entry['base']
-            current_eff = entry['effective']
+        for i, attr in enumerate(attributes):
+            name = attr.get('name', STAT_NAMES[i] if i < len(STAT_NAMES) else f"Unknown_{i}")
+            current_base = attr['base']
+            current_eff = attr['effective']
             
             while True:
                 prompt = f"{name} (current: {current_base}, effective: {current_eff}): "
@@ -181,16 +176,17 @@ def main(args=None):
                         new_eff = new_base
                     
                     # Apply the change
-                    write_stat_value(data, entry['offset'], new_base, new_eff)
-                    stat_changes_made.append({
-                        'name': name,
-                        'old_base': current_base,
-                        'new_base': new_base,
-                        'old_eff': current_eff,
-                        'new_eff': new_eff
-                    })
-                    
-                    print(f"  Changed: {current_base} -> {new_base} (effective: {current_eff} -> {new_eff})")
+                    if editor.set_attribute_value(i, new_base, new_eff):
+                        stat_changes.append({
+                            'name': name,
+                            'old_base': current_base,
+                            'new_base': new_base,
+                            'old_eff': current_eff,
+                            'new_eff': new_eff
+                        })
+                        print(f"  Changed: {current_base} -> {new_base} (effective: {current_eff} -> {new_eff})")
+                    else:
+                        print("  ERROR: Failed to update attribute.")
                     break
                     
                 except ValueError:
@@ -209,10 +205,10 @@ def main(args=None):
     print(f"Valid range: 0 to {max_skill_per_level}")
     print()
     
-    for i, entry in enumerate(skill_entries):
+    for i, skill in enumerate(skills):
         name = skill_names[i] if i < len(skill_names) else f"Unknown_{i}"
-        current_base = entry['base']
-        current_mod = entry['mod']
+        current_base = skill['base']
+        current_mod = skill['effective']
         
         while True:
             prompt = f"{name} (current: {current_base}, effective: {current_mod}): "
@@ -248,16 +244,17 @@ def main(args=None):
                     new_mod = new_base
                 
                 # Apply the change
-                write_skill_value(data, entry['offset'], new_base, new_mod)
-                changes_made.append({
-                    'name': name,
-                    'old_base': current_base,
-                    'new_base': new_base,
-                    'old_mod': current_mod,
-                    'new_mod': new_mod
-                })
-                
-                print(f"  Changed: {current_base} -> {new_base} (effective: {current_mod} -> {new_mod})")
+                if editor.set_skill_value(i, new_base, new_mod):
+                    skill_changes.append({
+                        'name': name,
+                        'old_base': current_base,
+                        'new_base': new_base,
+                        'old_mod': current_mod,
+                        'new_mod': new_mod
+                    })
+                    print(f"  Changed: {current_base} -> {new_base} (effective: {current_mod} -> {new_mod})")
+                else:
+                    print("  ERROR: Failed to update skill.")
                 break
                 
             except ValueError:
@@ -265,28 +262,29 @@ def main(args=None):
     
     print()
     
-    if not changes_made and not stat_changes_made:
+    if not editor.has_changes():
         print("No changes made.")
+        editor.cleanup()
         sys.exit(0)
     
     # Calculate total allocated skill points
     total_allocated = 0
-    for i, entry in enumerate(skill_entries):
-        base = struct.unpack('<i', data[entry['offset']:entry['offset']+4])[0]
-        total_allocated += base
+    updated_save_data = editor.get_save_data()
+    for skill in updated_save_data.get_skills():
+        total_allocated += skill['base']
     
     print("=" * 60)
     print("Summary of Changes")
     print("=" * 60)
     
-    if stat_changes_made:
+    if stat_changes:
         print("\nBase Attributes:")
-        for change in stat_changes_made:
+        for change in stat_changes:
             print(f"  {change['name']}: {change['old_base']} -> {change['new_base']}")
     
-    if changes_made:
+    if skill_changes:
         print("\nSkills:")
-        for change in changes_made:
+        for change in skill_changes:
             print(f"  {change['name']}: {change['old_base']} -> {change['new_base']}")
     
     print()
@@ -306,59 +304,48 @@ def main(args=None):
             pass
         elif confirm != 'y' and confirm != 'yes':
             print("Changes discarded.")
+            editor.cleanup()
             sys.exit(0)
     
-    # Determine the packed file location
-    if "global" in str(input_file.parent):
-        global_dat = input_file.parent.parent / "global.dat"
-        unpacked_file = input_file
-    else:
-        global_dat = save_dir / "global.dat"
-        unpacked_file = save_dir / "global" / "global"
-    
-    # Backup original
-    backup_file = global_dat.parent / "global.dat.OLD"
-    
+    # Apply changes
     print()
     print("Saving changes...")
     
-    backup_created = False
-    
-    if backup_file.exists():
-        print(f"  Note: '{backup_file.name}' already exists (previous backup)")
+    # Backup check
+    backup_path = input_file.with_suffix(input_file.suffix + ".OLD")
+    if backup_path.exists():
+        print(f"  Note: '{backup_path.name}' already exists (previous backup)")
         overwrite = input("  Replace existing backup with current save? (y/n): ").strip().lower()
         if overwrite == 'y':
-            backup_file.unlink()
+            backup_path.unlink()
     
-    if global_dat.exists() and not backup_file.exists():
-        print(f"  Backing up: '{global_dat.name}' -> '{backup_file.name}'")
-        global_dat.rename(backup_file)
-        backup_created = True
-    
-    # Save the unpacked version
-    print(f"  Writing unpacked data to '{unpacked_file}'...")
-    unpacked_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(unpacked_file, 'wb') as f:
-        f.write(bytes(data))
-    
-    # Pack and save
-    print(f"  Packing and saving to '{global_dat}'...")
-    packed_data = pack_data(bytes(data))
-    with open(global_dat, 'wb') as f:
-        f.write(packed_data)
-    
-    print()
-    print("Save complete!")
-    if backup_created:
-        print(f"  - Original backed up to: {backup_file.name}")
-    elif backup_file.exists():
-        print(f"  - Previous backup preserved: {backup_file.name}")
-    print(f"  - New save written to: {global_dat.name}")
-    print()
-    if backup_file.exists():
+    try:
+        # Save JSON and patch
+        print(f"  Writing changes to JSON...")
+        editor.save(backup=not backup_path.exists())
+        
+        print(f"  Patching save file with UFE...")
+        editor.apply(validate=True, cleanup_json=True)
+        
+        print()
+        print("Save complete!")
+        if backup_path.exists():
+            print(f"  - Original backed up to: {backup_path.name}")
+        print(f"  - Modified save: {input_file.name}")
+        print()
         print("To restore the backup, rename 'global.dat.OLD' back to 'global.dat'")
         print()
-    print("Note: The game will recalculate effective values when loading.")
+        print("Note: The game will recalculate effective values when loading.")
+        
+    except UFEError as e:
+        print(f"\nERROR: Failed to apply changes: {e}")
+        print("Your original save file should be unchanged.")
+        editor.cleanup()
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nERROR: Unexpected error: {e}")
+        editor.cleanup()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
